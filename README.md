@@ -33,7 +33,8 @@ Prerequisites:
 1. An AWS account and locally configured AWS credentials.
 2. AWS CLI and AWS SAM CLI.
 3. Node.js 20 or later.
-4. The `anyhowonly.com` public hosted zone in Route 53 in the deploying AWS account.
+4. A local Python interpreter compatible with the Lambda runtime declared in `infrastructure/template.yaml`, or a container runtime when using `sam build --use-container`.
+5. The `anyhowonly.com` public hosted zone in Route 53 in the deploying AWS account.
 
 Deploy a development stack with:
 
@@ -42,6 +43,8 @@ Deploy a development stack with:
 ```
 
 The first deployment uses `npm install` when the repository does not yet contain a `package-lock.json`; subsequent deployments use the reproducible `npm ci` path once that generated lockfile has been committed. If the first deployment creates `package-lock.json`, commit it to the repository before the next deployment.
+
+The deployment script does not hard-code or preflight a local Python executable. SAM reads the Lambda runtime from the infrastructure template. If the matching interpreter is not installed locally and a container runtime is available, run the deployment with `SAM_BUILD_USE_CONTAINER=true` to make SAM build in its runtime container.
 
 The script discovers the Route 53 zone for `anyhowonly.com`, builds the frontend, deploys a small certificate stack in `us-east-1`, and deploys the main SAM/CloudFormation application stack in `ap-southeast-1`. It then uploads `dist/` to the private S3 origin, invalidates CloudFront, and prints the application, AppSync, and Cognito outputs. The application URL is `https://ama.anyhowonly.com`.
 

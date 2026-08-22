@@ -55,7 +55,11 @@ if [[ -z "${CERTIFICATE_ARN}" || "${CERTIFICATE_ARN}" == "None" ]]; then
 fi
 
 echo "Deploying ${STACK_NAME}..."
-sam build --template-file infrastructure/template.yaml
+SAM_BUILD_ARGS=(--template-file infrastructure/template.yaml --build-dir .aws-sam/build)
+if [[ "${SAM_BUILD_USE_CONTAINER:-false}" == "true" ]]; then
+  SAM_BUILD_ARGS+=(--use-container)
+fi
+sam build "${SAM_BUILD_ARGS[@]}"
 sam deploy \
   --stack-name "${STACK_NAME}" \
   --region "${DEPLOY_REGION}" \
