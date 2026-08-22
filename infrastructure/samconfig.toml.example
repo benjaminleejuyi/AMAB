@@ -1,0 +1,8 @@
+version = 0.1
+
+[dev.deploy.parameters]
+stack_name = "askboard-dev"
+resolve_s3 = true
+capabilities = "CAPABILITY_IAM"
+confirm_changeset = true
+parameter_overrides = "Environment=dev ApiKeyExpiresEpoch=REPLACE_WITH_UNIX_TIMESTAMP MonthlyBudgetUsd=10"
