@@ -41,6 +41,8 @@ Deploy a development stack with:
 ./scripts/deploy.sh dev
 ```
 
+The first deployment uses `npm install` when the repository does not yet contain a `package-lock.json`; subsequent deployments use the reproducible `npm ci` path once that generated lockfile has been committed. If the first deployment creates `package-lock.json`, commit it to the repository before the next deployment.
+
 The script discovers the Route 53 zone for `anyhowonly.com`, builds the frontend, deploys a small certificate stack in `us-east-1`, and deploys the main SAM/CloudFormation application stack in `ap-southeast-1`. It then uploads `dist/` to the private S3 origin, invalidates CloudFront, and prints the application, AppSync, and Cognito outputs. The application URL is `https://ama.anyhowonly.com`.
 
 CloudFront requires its ACM certificate to be in `us-east-1`, even when the application runs elsewhere. The separate `askboard-<environment>-certificate` stack satisfies that restriction while the main stack defaults to `ap-southeast-1`. Set `AWS_REGION` only if you want the main application stack in another region; it does not change the certificate region.

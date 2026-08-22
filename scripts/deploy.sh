@@ -28,7 +28,12 @@ if [[ -z "${HOSTED_ZONE_ID}" || "${HOSTED_ZONE_ID}" == "None" ]]; then
 fi
 
 echo "Building frontend..."
-npm ci
+if [[ -f package-lock.json ]]; then
+  npm ci
+else
+  echo "package-lock.json is not present; running npm install to create it."
+  npm install
+fi
 npm run build
 
 echo "Deploying CloudFront certificate in ${CERTIFICATE_REGION}..."
