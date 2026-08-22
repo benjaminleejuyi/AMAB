@@ -29,6 +29,7 @@ Prerequisites:
 1. An AWS account and locally configured AWS credentials.
 2. AWS CLI and AWS SAM CLI.
 3. Node.js 20 or later.
+4. The `anyhowonly.com` public hosted zone in Route 53 in the deploying AWS account.
 
 Deploy a development stack with:
 
@@ -36,6 +37,18 @@ Deploy a development stack with:
 ./scripts/deploy.sh dev
 ```
 
+The script discovers the Route 53 zone for `anyhowonly.com`, builds the frontend, packages and deploys the SAM/CloudFormation template in `us-east-1`, uploads `dist/` to the private S3 origin, invalidates CloudFront, and prints the application, AppSync, and Cognito outputs. The application URL is `https://ama.anyhowonly.com`.
+
+CloudFront requires its ACM certificate to be in `us-east-1`, so the deployment script intentionally deploys this stack there. Override deployment settings when needed:
+
+```bash
+MONTHLY_BUDGET_USD=20 \
+HOSTED_ZONE_ID=Z123456789EXAMPLE \
+DOMAIN_NAME=ama.anyhowonly.com \
+./scripts/deploy.sh production
+```
+
+`HOSTED_ZONE_ID` is optional when the AWS identity can list Route 53 hosted zones. `API_KEY_EXPIRES_EPOCH` can also override the automatically generated 364-day API-key expiry.
 The script builds the frontend, packages and deploys the SAM/CloudFormation template, uploads `dist/` to the private S3 origin, invalidates CloudFront, and prints the application, AppSync, and Cognito outputs. Set `MONTHLY_BUDGET_USD` or `API_KEY_EXPIRES_EPOCH` to override their defaults.
 
 The stack creates:
@@ -45,6 +58,8 @@ The stack creates:
 - Python Lambda resolver backend
 - Encrypted, point-in-time-recoverable DynamoDB table
 - Private S3 web bucket and CloudFront distribution with origin access control
+- DNS-validated ACM certificate for `ama.anyhowonly.com`
+- Route 53 IPv4 and IPv6 alias records pointing the hostname to CloudFront
 - AppSync logging roles, least-privilege application roles, X-Ray, and a monthly AWS Budget
 
 To delete the CloudFormation-managed resources while retaining the DynamoDB data table:
