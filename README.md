@@ -1,4 +1,4 @@
-# Askboard
+# AMA Board
 
 A serverless, single-organization AMA board prototype. Participants can submit questions under a random pseudonym, vote, comment, filter the board, and display a selected question in presentation mode.
 

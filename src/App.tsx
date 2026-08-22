@@ -1,7 +1,8 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
-  ArrowDown, ArrowUp, ChevronDown, CircleHelp, LayoutGrid, MessageCircle,
-  MoreHorizontal, Plus, Presentation, Search, Send, Settings, Share2, Sparkles, X,
+  ArrowDown, ArrowRight, ArrowUp, BarChart3, Check, ChevronDown, CircleHelp, Globe2,
+  LayoutGrid, LockKeyhole, MessageCircle, MoreHorizontal, Plus, Presentation, Search,
+  Send, Settings, Share2, ShieldCheck, Sparkles, Users, X,
 } from 'lucide-react'
 import { initialQuestions } from './data'
 import type { Question, QuestionCategory } from './types'
@@ -75,7 +76,7 @@ function QuestionCard({ question, onVote, onPresent, onComment }: {
   )
 }
 
-export function App() {
+function BoardPage({ boardId, navigate }: { boardId: string, navigate: (path: string) => void }) {
   const [questions, setQuestions] = useState(initialQuestions)
   const [category, setCategory] = useState<(typeof categories)[number]>('All')
   const [sort, setSort] = useState<SortMode>('Top')
@@ -84,6 +85,8 @@ export function App() {
   const [newQuestion, setNewQuestion] = useState('')
   const [newCategory, setNewCategory] = useState<QuestionCategory>('Strategy')
   const [presenting, setPresenting] = useState<Question | null>(null)
+  const [shareNotice, setShareNotice] = useState(false)
+  const boardTitle = boardId === 'all-company' ? 'Ask the leadership team' : boardId.split('-').map(word => word[0]?.toUpperCase() + word.slice(1)).join(' ')
 
   const visibleQuestions = useMemo(() => questions
     .filter(item => category === 'All' || item.category === category)
@@ -123,19 +126,30 @@ export function App() {
     setPresenting(selected)
   }
 
+  const shareBoard = async () => {
+    const url = `${window.location.origin}/boards/${boardId}`
+    try {
+      await navigator.clipboard.writeText(url)
+    } catch {
+      window.history.replaceState({}, '', `/boards/${boardId}`)
+    }
+    setShareNotice(true)
+    window.setTimeout(() => setShareNotice(false), 2200)
+  }
+
   return (
     <div className="app-shell">
       <header>
-        <a className="brand" href="#"><span><Sparkles size={20} /></span> askboard</a>
-        <nav aria-label="Main navigation"><a className="active" href="#board"><LayoutGrid size={17} /> Board</a><a href="#about"><CircleHelp size={17} /> About</a></nav>
-        <div className="header-actions"><button className="share"><Share2 size={16} /> Share</button><button className="settings" aria-label="Board settings"><Settings size={18} /></button><span className="profile">MC</span></div>
+        <button className="brand brand-button" onClick={() => navigate('/')}><span><Sparkles size={20} /></span> AMA Board</button>
+        <nav aria-label="Main navigation"><button className="active"><LayoutGrid size={17} /> Board</button><button onClick={() => navigate('/about')}><CircleHelp size={17} /> About</button></nav>
+        <div className="header-actions"><button className="share" onClick={shareBoard}><Share2 size={16} /> Share</button><button className="settings" onClick={() => navigate(`/boards/${boardId}/settings`)} aria-label="Board settings"><Settings size={18} /></button><span className="profile">MC</span></div>
       </header>
 
       <main>
         <section className="hero">
           <div className="eyebrow"><span className="pulse" /> LIVE AMA · ALL COMPANY</div>
           <div className="hero-heading">
-            <div><h1>Ask the leadership team</h1><p>Vote for what matters. We’ll answer the most important questions live.</p></div>
+            <div><h1>{boardTitle}</h1><p>Vote for what matters. We’ll answer the most important questions live.</p></div>
             <button className="ask-button" onClick={() => setComposerOpen(true)}><Plus size={20} /> Ask a question</button>
           </div>
           <div className="board-meta"><span>Hosted by <b>Morgan Chen</b></span><span>Friday, 2:00 PM</span><span>128 participants</span></div>
@@ -165,10 +179,101 @@ export function App() {
 
       {presenting && <div className="presentation" role="dialog" aria-modal="true" aria-label="Presentation mode">
         <button className="end-presentation" onClick={() => setPresenting(null)}><X size={18} /> End presentation</button>
-        <div className="presentation-brand"><Sparkles size={23} /> askboard</div>
+        <div className="presentation-brand"><Sparkles size={23} /> AMA Board</div>
         <div className="presentation-card"><span className={`category category-${presenting.category.toLowerCase()}`}>{presenting.category}</span><h2>{presenting.body}</h2><p>{presenting.author}</p><div><ArrowUp size={24} /> {presenting.upvotes - presenting.downvotes} votes</div></div>
         <p className="presentation-footer">All-company AMA · Questions update live</p>
       </div>}
+      {shareNotice && <div className="toast" role="status"><Check size={17} /> Board link copied</div>}
     </div>
   )
+}
+
+function PublicHeader({ navigate, onLogin }: { navigate: (path: string) => void, onLogin: () => void }) {
+  return <header className="public-header">
+    <button className="brand brand-button" onClick={() => navigate('/')}><span><Sparkles size={20} /></span> AMA Board</button>
+    <nav aria-label="Main navigation"><button onClick={() => navigate('/about')}>About</button><button onClick={() => navigate('/boards/all-company')}>View demo</button></nav>
+    <button className="login-button" onClick={onLogin}>Log in <ArrowRight size={16} /></button>
+  </header>
+}
+
+function LoginDialog({ onClose, navigate }: { onClose: () => void, navigate: (path: string) => void }) {
+  return <div className="modal-backdrop" onMouseDown={onClose}>
+    <section className="login-dialog" role="dialog" aria-modal="true" aria-labelledby="login-title" onMouseDown={event => event.stopPropagation()}>
+      <button className="modal-close" onClick={onClose} aria-label="Close"><X size={20} /></button>
+      <span className="composer-icon"><LockKeyhole size={22} /></span>
+      <h2 id="login-title">Welcome back</h2><p>Sign in with your organisation account to manage boards.</p>
+      <label>Email address<input type="email" placeholder="you@company.com" /></label>
+      <label>Password<input type="password" placeholder="••••••••••••" /></label>
+      <button className="dialog-primary" onClick={() => navigate('/boards/all-company')}>Continue <ArrowRight size={17} /></button>
+      <small>Authentication will be provided by your organisation’s Cognito account.</small>
+    </section>
+  </div>
+}
+
+function LandingPage({ navigate }: { navigate: (path: string) => void }) {
+  const [loginOpen, setLoginOpen] = useState(false)
+  return <div className="marketing-shell">
+    <PublicHeader navigate={navigate} onLogin={() => setLoginOpen(true)} />
+    <main className="landing-main">
+      <section className="landing-hero">
+        <div className="landing-copy"><div className="marketing-eyebrow"><Sparkles size={14} /> Better conversations, together</div>
+          <h1>Give every question<br /><em>a place to be heard.</em></h1>
+          <p>Run focused AMAs where people ask freely, vote together, and leaders answer what matters most.</p>
+          <div className="landing-actions"><button onClick={() => setLoginOpen(true)}>Create your board <ArrowRight size={18} /></button><button onClick={() => navigate('/boards/all-company')}>Explore the demo</button></div>
+          <div className="trust-line"><span><Check size={14} /> Anonymous by choice</span><span><Check size={14} /> Live voting</span><span><Check size={14} /> Presentation ready</span></div>
+        </div>
+        <div className="hero-visual" aria-label="AMA Board product preview">
+          <div className="visual-glow" /><div className="mini-board"><div className="mini-top"><span><Sparkles size={13} /> AMA Board</span><i>LIVE</i></div><h3>Ask the leadership team</h3>
+            <div className="mini-question featured"><b>Strategy</b><p>What are the most important bets we’re making this year?</p><span>↑ 42</span></div>
+            <div className="mini-question"><b>Culture</b><p>What should we protect as our team grows?</p><span>↑ 27</span></div>
+            <div className="mini-question"><b>Product</b><p>How is customer feedback shaping the roadmap?</p><span>↑ 19</span></div>
+          </div><div className="floating-card"><Users size={18} /><div><strong>128 voices</strong><span>One shared conversation</span></div></div>
+        </div>
+      </section>
+      <section className="feature-strip"><div><MessageCircle /><h3>Ask safely</h3><p>Use your name or a friendly pseudonym.</p></div><div><BarChart3 /><h3>Prioritise together</h3><p>Visible voting brings the key topics forward.</p></div><div><Presentation /><h3>Answer with focus</h3><p>Move any question into presentation mode.</p></div></section>
+    </main>
+    {loginOpen && <LoginDialog onClose={() => setLoginOpen(false)} navigate={navigate} />}
+  </div>
+}
+
+function AboutPage({ navigate }: { navigate: (path: string) => void }) {
+  const [loginOpen, setLoginOpen] = useState(false)
+  return <div className="marketing-shell"><PublicHeader navigate={navigate} onLogin={() => setLoginOpen(true)} />
+    <main className="simple-page"><div className="marketing-eyebrow">About AMA Board</div><h1>Honest questions make<br />stronger organisations.</h1><p className="page-lead">AMA Board creates an open, organised space for every voice—before, during, and after your AMA.</p>
+      <section className="values-grid"><article><Globe2 /><h2>Open by default</h2><p>Public and unlisted boards make it effortless to join while administrators stay in control.</p></article><article><ShieldCheck /><h2>Safe to speak</h2><p>Participants can identify themselves or use a consistent, friendly pseudonym.</p></article><article><Presentation /><h2>Built for the room</h2><p>Present the selected question clearly without losing the live audience conversation.</p></article></section>
+      <button className="page-cta" onClick={() => navigate('/boards/all-company')}>See AMA Board in action <ArrowRight size={18} /></button>
+    </main>{loginOpen && <LoginDialog onClose={() => setLoginOpen(false)} navigate={navigate} />}</div>
+}
+
+function SettingsPage({ boardId, navigate }: { boardId: string, navigate: (path: string) => void }) {
+  const [saved, setSaved] = useState(false)
+  const [comments, setComments] = useState(true)
+  const [anonymous, setAnonymous] = useState(true)
+  return <div className="settings-shell"><header><button className="brand brand-button" onClick={() => navigate('/')}><span><Sparkles size={20} /></span> AMA Board</button><button className="back-board" onClick={() => navigate(`/boards/${boardId}`)}>← Back to board</button><span className="profile">MC</span></header>
+    <main className="settings-page"><div className="settings-title"><div><span>Board administration</span><h1>Board settings</h1><p>Control how people find and participate in this AMA.</p></div><button onClick={() => { setSaved(true); window.setTimeout(() => setSaved(false), 2000) }}>{saved ? <><Check size={17} /> Saved</> : 'Save changes'}</button></div>
+      <section className="settings-grid"><aside><button className="active">General</button><button>Participation</button><button>Moderators</button><button>Presentation</button></aside><div className="settings-panels">
+        <article><h2>Board details</h2><p>The information participants see at the top of this board.</p><label>Board title<input defaultValue="Ask the leadership team" /></label><label>Description<textarea defaultValue="Vote for what matters. We’ll answer the most important questions live." /></label></article>
+        <article><h2>Access and participation</h2><p>Choose how your organisation can take part.</p><label>Board visibility<select defaultValue="unlisted"><option value="public">Public</option><option value="unlisted">Unlisted — link only</option></select></label><div className="setting-row"><div><b>Allow comments</b><span>Participants can comment without pre-moderation.</span></div><button className={`switch ${comments ? 'on' : ''}`} onClick={() => setComments(!comments)} aria-label="Allow comments"><i /></button></div><div className="setting-row"><div><b>Allow pseudonyms</b><span>Assign a friendly identity when no name is provided.</span></div><button className={`switch ${anonymous ? 'on' : ''}`} onClick={() => setAnonymous(!anonymous)} aria-label="Allow pseudonyms"><i /></button></div></article>
+      </div></section>
+    </main></div>
+}
+
+export function App() {
+  const [path, setPath] = useState(window.location.pathname)
+  useEffect(() => {
+    const onPopState = () => setPath(window.location.pathname)
+    window.addEventListener('popstate', onPopState)
+    return () => window.removeEventListener('popstate', onPopState)
+  }, [])
+  const navigate = (nextPath: string) => {
+    window.history.pushState({}, '', nextPath)
+    setPath(nextPath)
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+  const settingsMatch = path.match(/^\/boards\/([^/]+)\/settings\/?$/)
+  const boardMatch = path.match(/^\/boards\/([^/]+)\/?$/)
+  if (settingsMatch) return <SettingsPage boardId={settingsMatch[1]} navigate={navigate} />
+  if (boardMatch) return <BoardPage boardId={boardMatch[1]} navigate={navigate} />
+  if (path === '/about') return <AboutPage navigate={navigate} />
+  return <LandingPage navigate={navigate} />
 }
