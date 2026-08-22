@@ -49,6 +49,7 @@ DOMAIN_NAME=ama.anyhowonly.com \
 ```
 
 `HOSTED_ZONE_ID` is optional when the AWS identity can list Route 53 hosted zones. `API_KEY_EXPIRES_EPOCH` can also override the automatically generated 364-day API-key expiry.
+The script builds the frontend, packages and deploys the SAM/CloudFormation template, uploads `dist/` to the private S3 origin, invalidates CloudFront, and prints the application, AppSync, and Cognito outputs. Set `MONTHLY_BUDGET_USD` or `API_KEY_EXPIRES_EPOCH` to override their defaults.
 
 The stack creates:
 

@@ -48,3 +48,16 @@ aws s3 sync dist/ "s3://${BUCKET}" --delete
 aws cloudfront create-invalidation --region "${AWS_REGION}" --distribution-id "${DISTRIBUTION}" --paths '/*' >/dev/null
 
 aws cloudformation describe-stacks --region "${AWS_REGION}" --stack-name "${STACK_NAME}" --query 'Stacks[0].Outputs' --output table
+  --resolve-s3 \
+  --capabilities CAPABILITY_IAM \
+  --parameter-overrides "Environment=${ENVIRONMENT}" "ApiKeyExpiresEpoch=${EXPIRY}" "MonthlyBudgetUsd=${BUDGET_USD}" \
+  --no-fail-on-empty-changeset
+
+BUCKET="$(aws cloudformation describe-stacks --stack-name "${STACK_NAME}" --query "Stacks[0].Outputs[?OutputKey=='WebBucketName'].OutputValue" --output text)"
+DISTRIBUTION="$(aws cloudformation describe-stacks --stack-name "${STACK_NAME}" --query "Stacks[0].Outputs[?OutputKey=='DistributionId'].OutputValue" --output text)"
+
+echo "Publishing frontend to s3://${BUCKET}..."
+aws s3 sync dist/ "s3://${BUCKET}" --delete
+aws cloudfront create-invalidation --distribution-id "${DISTRIBUTION}" --paths '/*' >/dev/null
+
+aws cloudformation describe-stacks --stack-name "${STACK_NAME}" --query 'Stacks[0].Outputs' --output table

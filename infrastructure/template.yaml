@@ -251,6 +251,7 @@ Resources:
           AcmCertificateArn: !Ref DomainCertificate
           MinimumProtocolVersion: TLSv1.2_2021
           SslSupportMethod: sni-only
+        ViewerCertificate: { CloudFrontDefaultCertificate: true }
 
   WebBucketPolicy:
     Type: AWS::S3::BucketPolicy
@@ -302,3 +303,4 @@ Outputs:
   DistributionId: { Value: !Ref Distribution }
   CloudFrontUrl: { Value: !Sub 'https://${Distribution.DomainName}' }
   ApplicationUrl: { Value: !Sub 'https://${DomainName}' }
+  ApplicationUrl: { Value: !Sub 'https://${Distribution.DomainName}' }
