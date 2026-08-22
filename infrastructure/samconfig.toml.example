@@ -7,3 +7,12 @@ resolve_s3 = true
 capabilities = "CAPABILITY_IAM"
 confirm_changeset = true
 parameter_overrides = "Environment=dev DomainName=ama.anyhowonly.com HostedZoneId=REPLACE_WITH_HOSTED_ZONE_ID CertificateArn=REPLACE_WITH_US_EAST_1_CERTIFICATE_ARN ApiKeyExpiresEpoch=REPLACE_WITH_UNIX_TIMESTAMP MonthlyBudgetUsd=10"
+region = "us-east-1"
+resolve_s3 = true
+capabilities = "CAPABILITY_IAM"
+confirm_changeset = true
+parameter_overrides = "Environment=dev DomainName=ama.anyhowonly.com HostedZoneId=REPLACE_WITH_HOSTED_ZONE_ID ApiKeyExpiresEpoch=REPLACE_WITH_UNIX_TIMESTAMP MonthlyBudgetUsd=10"
+resolve_s3 = true
+capabilities = "CAPABILITY_IAM"
+confirm_changeset = true
+parameter_overrides = "Environment=dev ApiKeyExpiresEpoch=REPLACE_WITH_UNIX_TIMESTAMP MonthlyBudgetUsd=10"
