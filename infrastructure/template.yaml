@@ -213,20 +213,6 @@ Resources:
     Properties:
       OriginAccessControlConfig: { Name: !Sub 'askboard-${Environment}', OriginAccessControlOriginType: s3, SigningBehavior: always, SigningProtocol: sigv4 }
 
-  DomainCertificate:
-    Type: AWS::CertificateManager::Certificate
-    Properties:
-      DomainName: !Ref DomainName
-      ValidationMethod: DNS
-      DomainValidationOptions:
-        - DomainName: !Ref DomainName
-          HostedZoneId: !Ref HostedZoneId
-      Tags:
-        - Key: Application
-          Value: Askboard
-        - Key: Environment
-          Value: !Ref Environment
-
   Distribution:
     Type: AWS::CloudFront::Distribution
     Properties:
@@ -255,10 +241,6 @@ Resources:
           AcmCertificateArn: !Ref CertificateArn
           MinimumProtocolVersion: TLSv1.2_2021
           SslSupportMethod: sni-only
-          AcmCertificateArn: !Ref DomainCertificate
-          MinimumProtocolVersion: TLSv1.2_2021
-          SslSupportMethod: sni-only
-        ViewerCertificate: { CloudFrontDefaultCertificate: true }
 
   WebBucketPolicy:
     Type: AWS::S3::BucketPolicy
@@ -310,4 +292,3 @@ Outputs:
   DistributionId: { Value: !Ref Distribution }
   CloudFrontUrl: { Value: !Sub 'https://${Distribution.DomainName}' }
   ApplicationUrl: { Value: !Sub 'https://${DomainName}' }
-  ApplicationUrl: { Value: !Sub 'https://${Distribution.DomainName}' }

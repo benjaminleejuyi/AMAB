@@ -48,19 +48,25 @@ CloudFront requires its ACM certificate to be in `us-east-1`, even when the appl
 ```bash
 MONTHLY_BUDGET_USD=20 \
 AWS_REGION=ap-southeast-1 \
-The script discovers the Route 53 zone for `anyhowonly.com`, builds the frontend, packages and deploys the SAM/CloudFormation template in `us-east-1`, uploads `dist/` to the private S3 origin, invalidates CloudFront, and prints the application, AppSync, and Cognito outputs. The application URL is `https://ama.anyhowonly.com`.
-
-CloudFront requires its ACM certificate to be in `us-east-1`, so the deployment script intentionally deploys this stack there. Override deployment settings when needed:
-
-```bash
-MONTHLY_BUDGET_USD=20 \
 HOSTED_ZONE_ID=Z123456789EXAMPLE \
 DOMAIN_NAME=ama.anyhowonly.com \
 ./scripts/deploy.sh production
 ```
 
 `HOSTED_ZONE_ID` is optional when the AWS identity can list Route 53 hosted zones. `API_KEY_EXPIRES_EPOCH` can also override the automatically generated 364-day API-key expiry.
-The script builds the frontend, packages and deploys the SAM/CloudFormation template, uploads `dist/` to the private S3 origin, invalidates CloudFront, and prints the application, AppSync, and Cognito outputs. Set `MONTHLY_BUDGET_USD` or `API_KEY_EXPIRES_EPOCH` to override their defaults.
+
+### Resolving deployment-script merge conflicts
+
+If GitHub reports a conflict in `scripts/deploy.sh`, do not choose **Accept both changes** between the old single-region check and the new regional-stack implementation. Keep the version that defines both `DEPLOY_REGION` and `CERTIFICATE_REGION`, and remove any block that requires `DEPLOY_REGION` to equal `us-east-1`.
+
+The current script prints `2026-08-22-regional-stack-v2` when it starts. If that version is not shown in CloudShell, update the checkout before deploying. Verify it with:
+
+```bash
+grep -n 'SCRIPT_VERSION\|DEPLOY_REGION\|CERTIFICATE_REGION' scripts/deploy.sh
+grep -n 'CloudFront ACM certificates must' scripts/deploy.sh || true
+```
+
+The second command must produce no output.
 
 The stack creates:
 
@@ -70,7 +76,6 @@ The stack creates:
 - Encrypted, point-in-time-recoverable DynamoDB table
 - Private S3 web bucket and CloudFront distribution with origin access control
 - A separate `us-east-1` stack containing the DNS-validated ACM certificate for `ama.anyhowonly.com`
-- DNS-validated ACM certificate for `ama.anyhowonly.com`
 - Route 53 IPv4 and IPv6 alias records pointing the hostname to CloudFront
 - AppSync logging roles, least-privilege application roles, X-Ray, and a monthly AWS Budget
 
