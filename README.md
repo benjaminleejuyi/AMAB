@@ -2,6 +2,8 @@
 
 A serverless, single-organization AMA board prototype. Participants can submit questions under a random pseudonym, vote, comment, filter the board, and display a selected question in presentation mode.
 
+**Production hostname:** [https://ama.anyhowonly.com](https://ama.anyhowonly.com)
+
 ## Run locally
 
 ```bash
@@ -24,6 +26,8 @@ Public and unlisted boards are in scope. Private boards, multi-organization tena
 
 ## Deploy to AWS
 
+The infrastructure is configured to serve Askboard at `ama.anyhowonly.com` through Route 53, an ACM certificate, and CloudFront. The `anyhowonly.com` public hosted zone must already exist in the AWS account; the deployment script discovers it automatically or accepts `HOSTED_ZONE_ID` explicitly.
+
 Prerequisites:
 
 1. An AWS account and locally configured AWS credentials.
@@ -37,6 +41,13 @@ Deploy a development stack with:
 ./scripts/deploy.sh dev
 ```
 
+The script discovers the Route 53 zone for `anyhowonly.com`, builds the frontend, deploys a small certificate stack in `us-east-1`, and deploys the main SAM/CloudFormation application stack in `ap-southeast-1`. It then uploads `dist/` to the private S3 origin, invalidates CloudFront, and prints the application, AppSync, and Cognito outputs. The application URL is `https://ama.anyhowonly.com`.
+
+CloudFront requires its ACM certificate to be in `us-east-1`, even when the application runs elsewhere. The separate `askboard-<environment>-certificate` stack satisfies that restriction while the main stack defaults to `ap-southeast-1`. Set `AWS_REGION` only if you want the main application stack in another region; it does not change the certificate region.
+
+```bash
+MONTHLY_BUDGET_USD=20 \
+AWS_REGION=ap-southeast-1 \
 The script discovers the Route 53 zone for `anyhowonly.com`, builds the frontend, packages and deploys the SAM/CloudFormation template in `us-east-1`, uploads `dist/` to the private S3 origin, invalidates CloudFront, and prints the application, AppSync, and Cognito outputs. The application URL is `https://ama.anyhowonly.com`.
 
 CloudFront requires its ACM certificate to be in `us-east-1`, so the deployment script intentionally deploys this stack there. Override deployment settings when needed:
@@ -58,6 +69,7 @@ The stack creates:
 - Python Lambda resolver backend
 - Encrypted, point-in-time-recoverable DynamoDB table
 - Private S3 web bucket and CloudFront distribution with origin access control
+- A separate `us-east-1` stack containing the DNS-validated ACM certificate for `ama.anyhowonly.com`
 - DNS-validated ACM certificate for `ama.anyhowonly.com`
 - Route 53 IPv4 and IPv6 alias records pointing the hostname to CloudFront
 - AppSync logging roles, least-privilege application roles, X-Ray, and a monthly AWS Budget

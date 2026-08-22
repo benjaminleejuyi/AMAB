@@ -5,6 +5,9 @@ ENVIRONMENT="${1:-dev}"
 BUDGET_USD="${MONTHLY_BUDGET_USD:-10}"
 EXPIRY="${API_KEY_EXPIRES_EPOCH:-$(date -d '+364 days' +%s)}"
 STACK_NAME="askboard-${ENVIRONMENT}"
+CERTIFICATE_STACK_NAME="${STACK_NAME}-certificate"
+DEPLOY_REGION="${AWS_REGION:-ap-southeast-1}"
+CERTIFICATE_REGION="us-east-1"
 AWS_REGION="${AWS_REGION:-us-east-1}"
 DOMAIN_NAME="${DOMAIN_NAME:-ama.anyhowonly.com}"
 HOSTED_ZONE_NAME="${HOSTED_ZONE_NAME:-anyhowonly.com}"
@@ -30,10 +33,42 @@ echo "Building frontend..."
 npm ci
 npm run build
 
+echo "Deploying CloudFront certificate in ${CERTIFICATE_REGION}..."
+aws cloudformation deploy \
+  --template-file infrastructure/certificate-template.yaml \
+  --stack-name "${CERTIFICATE_STACK_NAME}" \
+  --region "${CERTIFICATE_REGION}" \
+  --parameter-overrides "Environment=${ENVIRONMENT}" "DomainName=${DOMAIN_NAME}" "HostedZoneId=${HOSTED_ZONE_ID}" \
+  --no-fail-on-empty-changeset
+
+CERTIFICATE_ARN="$(aws cloudformation describe-stacks \
+  --region "${CERTIFICATE_REGION}" \
+  --stack-name "${CERTIFICATE_STACK_NAME}" \
+  --query "Stacks[0].Outputs[?OutputKey=='CertificateArn'].OutputValue" \
+  --output text)"
+if [[ -z "${CERTIFICATE_ARN}" || "${CERTIFICATE_ARN}" == "None" ]]; then
+  echo "Certificate stack did not return a certificate ARN." >&2
+  exit 1
+fi
+
 echo "Deploying ${STACK_NAME}..."
 sam build --template-file infrastructure/template.yaml
 sam deploy \
   --stack-name "${STACK_NAME}" \
+  --region "${DEPLOY_REGION}" \
+  --resolve-s3 \
+  --capabilities CAPABILITY_IAM \
+  --parameter-overrides "Environment=${ENVIRONMENT}" "DomainName=${DOMAIN_NAME}" "HostedZoneId=${HOSTED_ZONE_ID}" "CertificateArn=${CERTIFICATE_ARN}" "ApiKeyExpiresEpoch=${EXPIRY}" "MonthlyBudgetUsd=${BUDGET_USD}" \
+  --no-fail-on-empty-changeset
+
+BUCKET="$(aws cloudformation describe-stacks --region "${DEPLOY_REGION}" --stack-name "${STACK_NAME}" --query "Stacks[0].Outputs[?OutputKey=='WebBucketName'].OutputValue" --output text)"
+DISTRIBUTION="$(aws cloudformation describe-stacks --region "${DEPLOY_REGION}" --stack-name "${STACK_NAME}" --query "Stacks[0].Outputs[?OutputKey=='DistributionId'].OutputValue" --output text)"
+
+echo "Publishing frontend to s3://${BUCKET}..."
+aws s3 sync dist/ "s3://${BUCKET}" --delete
+aws cloudfront create-invalidation --region "${DEPLOY_REGION}" --distribution-id "${DISTRIBUTION}" --paths '/*' >/dev/null
+
+aws cloudformation describe-stacks --region "${DEPLOY_REGION}" --stack-name "${STACK_NAME}" --query 'Stacks[0].Outputs' --output table
   --region "${AWS_REGION}" \
   --resolve-s3 \
   --capabilities CAPABILITY_IAM \

@@ -15,6 +15,10 @@ Parameters:
   HostedZoneId:
     Type: AWS::Route53::HostedZone::Id
     Description: Route 53 public hosted zone ID for anyhowonly.com
+  CertificateArn:
+    Type: String
+    Description: ACM certificate ARN created by the Askboard certificate stack in us-east-1
+    AllowedPattern: '^arn:[^:]+:acm:us-east-1:[0-9]{12}:certificate/.+$'
   ApiKeyExpiresEpoch:
     Type: Number
     Description: API key expiry as Unix epoch seconds (maximum 365 days from deployment)
@@ -248,6 +252,9 @@ Resources:
           - { ErrorCode: 403, ResponseCode: 200, ResponsePagePath: /index.html, ErrorCachingMinTTL: 0 }
           - { ErrorCode: 404, ResponseCode: 200, ResponsePagePath: /index.html, ErrorCachingMinTTL: 0 }
         ViewerCertificate:
+          AcmCertificateArn: !Ref CertificateArn
+          MinimumProtocolVersion: TLSv1.2_2021
+          SslSupportMethod: sni-only
           AcmCertificateArn: !Ref DomainCertificate
           MinimumProtocolVersion: TLSv1.2_2021
           SslSupportMethod: sni-only
