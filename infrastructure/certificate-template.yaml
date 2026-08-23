@@ -1,0 +1,33 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Askboard CloudFront certificate in the required us-east-1 region
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedPattern: '[a-z0-9-]+'
+  DomainName:
+    Type: String
+    Default: ama.anyhowonly.com
+  HostedZoneId:
+    Type: AWS::Route53::HostedZone::Id
+
+Resources:
+  DomainCertificate:
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: !Ref DomainName
+      ValidationMethod: DNS
+      DomainValidationOptions:
+        - DomainName: !Ref DomainName
+          HostedZoneId: !Ref HostedZoneId
+      Tags:
+        - Key: Application
+          Value: Askboard
+        - Key: Environment
+          Value: !Ref Environment
+
+Outputs:
+  CertificateArn:
+    Description: Certificate ARN passed to the regional Askboard stack
+    Value: !Ref DomainCertificate
