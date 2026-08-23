@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { App } from './App'
 
 describe('AMA board', () => {
+  const idToken = `x.${btoa(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 3600 }))}.x`
   beforeEach(() => {
     window.history.replaceState({}, '', '/')
     window.scrollTo = vi.fn()
@@ -42,16 +43,29 @@ describe('AMA board', () => {
     fireEvent.change(screen.getByPlaceholderText('you@company.com'), { target: { value: 'admin@example.com' } })
     fireEvent.change(screen.getByPlaceholderText('••••••••••••'), { target: { value: 'secret-password' } })
     fireEvent.click(screen.getByRole('button', { name: /continue/i }))
-    await waitFor(() => expect(window.location.pathname).toBe('/boards/all-company'))
+    await waitFor(() => expect(window.location.pathname).toBe('/admin'))
   })
 
   it('opens settings for an authenticated administrator', () => {
     window.history.replaceState({}, '', '/boards/all-company')
-    sessionStorage.setItem('ama-board-session', JSON.stringify({ accessToken: 'access', idToken: 'id', email: 'admin@example.com' }))
+    sessionStorage.setItem('ama-board-session', JSON.stringify({ accessToken: 'access', idToken, email: 'admin@example.com' }))
     render(<App />)
     fireEvent.click(screen.getByRole('button', { name: /board settings/i }))
     expect(screen.getByRole('heading', { name: /board settings/i })).toBeInTheDocument()
     expect(window.location.pathname).toBe('/boards/all-company/settings')
+    fireEvent.click(screen.getByRole('button', { name: 'Participation' }))
+    expect(screen.getByRole('heading', { name: /access and participation/i })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Moderators' }))
+    expect(screen.getByRole('heading', { name: /board moderators/i })).toBeInTheDocument()
+  })
+
+  it('shows the signed-in account and site administration', () => {
+    sessionStorage.setItem('ama-board-session', JSON.stringify({ accessToken: 'access', idToken, email: 'admin@example.com' }))
+    render(<App />)
+    expect(screen.queryByRole('button', { name: /log in/i })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /administration/i }))
+    expect(screen.getByRole('heading', { name: 'Administration' })).toBeInTheDocument()
+    expect(screen.getByText('admin@example.com')).toBeInTheDocument()
   })
 
   it('opens the about page', () => {

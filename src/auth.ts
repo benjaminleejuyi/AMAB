@@ -56,7 +56,13 @@ export async function completeNewPassword(email: string, password: string, chall
 }
 
 export function readSession(): AuthSession | null {
-  try { return JSON.parse(sessionStorage.getItem('ama-board-session') || 'null') }
+  try {
+    const session: AuthSession | null = JSON.parse(sessionStorage.getItem('ama-board-session') || 'null')
+    if (!session) return null
+    const payload = JSON.parse(atob(session.idToken.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')))
+    if (payload.exp * 1000 <= Date.now()) { signOut(); return null }
+    return session
+  }
   catch { return null }
 }
 
