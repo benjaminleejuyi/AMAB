@@ -166,8 +166,9 @@ def assign_moderator(args: dict, user_id: str) -> dict:
     return _public(item)
 
 
-def invite_user(args: dict, user_id: str, organisation_admin: bool) -> dict:
-    _require_board_role(args["boardId"], user_id, owner_only=True, organisation_admin=organisation_admin)
+def invite_organization_user(args: dict, organisation_admin: bool) -> dict:
+    if not organisation_admin:
+        raise PermissionError("Only organization administrators can invite users")
     response = boto3.client("cognito-idp").admin_create_user(
         UserPoolId=USER_POOL_ID,
         Username=args["email"],
@@ -175,7 +176,15 @@ def invite_user(args: dict, user_id: str, organisation_admin: bool) -> dict:
         DesiredDeliveryMediums=["EMAIL"],
     )
     invited_user_id = response["User"]["Username"]
-    item = {"PK": f"BOARD#{args['boardId']}", "SK": f"MEMBER#{invited_user_id}", "entity": "MEMBER", "boardId": args["boardId"], "userId": invited_user_id, "role": "MODERATOR"}
+    boto3.client("cognito-idp").admin_add_user_to_group(UserPoolId=USER_POOL_ID, Username=invited_user_id, GroupName="Users")
+    return {"userId": invited_user_id, "email": args["email"], "status": response["User"].get("UserStatus", "FORCE_CHANGE_PASSWORD")}
+
+
+def assign_board_role(args: dict, user_id: str, organisation_admin: bool) -> dict:
+    _require_board_role(args["boardId"], user_id, owner_only=True, organisation_admin=organisation_admin)
+    response = boto3.client("cognito-idp").admin_get_user(UserPoolId=USER_POOL_ID, Username=args["email"])
+    member_id = response["Username"]
+    item = {"PK": f"BOARD#{args['boardId']}", "SK": f"MEMBER#{member_id}", "entity": "MEMBER", "boardId": args["boardId"], "userId": member_id, "role": args["role"]}
     table.put_item(Item=item)
     return _public(item)
 
@@ -196,7 +205,8 @@ def handler(event: dict, _context: object) -> dict:
         "castVote": lambda: cast_vote(args, user_id), "addComment": lambda: add_comment(args, user_id),
         "selectQuestion": lambda: select_question(args, user_id),
         "assignModerator": lambda: assign_moderator(args, user_id),
-        "inviteUser": lambda: invite_user(args, user_id, organisation_admin),
+        "inviteOrganizationUser": lambda: invite_organization_user(args, organisation_admin),
+        "assignBoardRole": lambda: assign_board_role(args, user_id, organisation_admin),
     }
     if field not in handlers:
         raise ValueError(f"Unsupported field: {field}")

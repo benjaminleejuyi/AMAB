@@ -37,6 +37,7 @@ type Question @aws_cognito_user_pools @aws_api_key {
 type Comment { id: ID!, questionId: ID!, body: String!, authorDisplayName: String!, createdAt: AWSDateTime! }
 type QuestionConnection { items: [Question!]!, nextToken: String }
 type BoardMember { boardId: ID!, userId: ID!, role: BoardRole! }
+type OrganizationUser { userId: ID!, email: AWSEmail!, status: String! }
 
 input CreateQuestionInput { boardId: ID!, body: String!, category: String!, identifyAs: String }
 input CreateBoardInput { title: String!, description: String, visibility: BoardVisibility, postingPolicy: PostingPolicy, votingMode: VotingMode, commentsEnabled: Boolean }
@@ -50,7 +51,8 @@ type Mutation {
   addComment(input: AddCommentInput!): Comment! @aws_cognito_user_pools @aws_api_key
   selectQuestion(boardId: ID!, questionId: ID): Board! @aws_cognito_user_pools
   assignModerator(boardId: ID!, userId: ID!): BoardMember! @aws_cognito_user_pools
-  inviteUser(boardId: ID!, email: AWSEmail!): BoardMember! @aws_cognito_user_pools
+  inviteOrganizationUser(email: AWSEmail!): OrganizationUser! @aws_cognito_user_pools
+  assignBoardRole(boardId: ID!, email: AWSEmail!, role: BoardRole!): BoardMember! @aws_cognito_user_pools
 }
 
 type Query {

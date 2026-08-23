@@ -2,11 +2,11 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   ArrowDown, ArrowRight, ArrowUp, BarChart3, Check, ChevronDown, CircleHelp, Globe2,
   LayoutGrid, LockKeyhole, LogOut, MessageCircle, MoreHorizontal, Plus, Presentation, Search,
-  Send, Settings, Share2, ShieldCheck, Sparkles, UserCog, Users, X,
+  Send, Settings, Share2, ShieldCheck, Sparkles, Users, X,
 } from 'lucide-react'
 import { initialQuestions } from './data'
 import type { Question, QuestionCategory } from './types'
-import { completeNewPassword, inviteUser, NewPasswordRequiredError, readSession, signIn, signOut, type AuthSession } from './auth'
+import { assignBoardRole, completeNewPassword, inviteOrganizationUser, NewPasswordRequiredError, readSession, signIn, signOut, type AuthSession } from './auth'
 
 type SortMode = 'Top' | 'Newest' | 'Oldest'
 
@@ -144,7 +144,7 @@ function BoardPage({ boardId, navigate, session }: { boardId: string, navigate: 
       <header>
         <button className="brand brand-button" onClick={() => navigate('/')}><span><Sparkles size={20} /></span> AMA Board</button>
         <nav aria-label="Main navigation"><button className="active"><LayoutGrid size={17} /> Board</button><button onClick={() => navigate('/about')}><CircleHelp size={17} /> About</button></nav>
-        <div className="header-actions"><button className="share" onClick={shareBoard}><Share2 size={16} /> Share</button>{session && <button className="settings" onClick={() => navigate(`/boards/${boardId}/settings`)} aria-label="Board settings"><Settings size={18} /></button>}<button className="profile profile-button" title={session?.email ?? 'Guest'} onClick={() => navigate(session ? '/admin' : '/')}>{initials}</button></div>
+        <div className="header-actions"><button className="share" onClick={shareBoard}><Share2 size={16} /> Share</button>{session && <button className="settings" onClick={() => navigate(`/boards/${boardId}/settings`)} aria-label="Board settings"><Settings size={18} /></button>}<button className="profile profile-button" title={session?.email ?? 'Guest'} onClick={() => navigate(session ? '/settings' : '/')}>{initials}</button></div>
       </header>
 
       <main>
@@ -194,7 +194,7 @@ function PublicHeader({ navigate, onLogin, session }: { navigate: (path: string)
   return <header className="public-header">
     <button className="brand brand-button" onClick={() => navigate('/')}><span><Sparkles size={20} /></span> AMA Board</button>
     <nav aria-label="Main navigation"><button onClick={() => navigate('/about')}>About</button><button onClick={() => navigate('/boards/all-company')}>View demo</button></nav>
-    {session ? <button className="login-button" onClick={() => navigate('/admin')}><UserCog size={16} /> Administration</button> : <button className="login-button" onClick={onLogin}>Log in <ArrowRight size={16} /></button>}
+    {session ? <button className="login-button" onClick={() => navigate('/settings')}><Settings size={16} /> Account</button> : <button className="login-button" onClick={onLogin}>Log in <ArrowRight size={16} /></button>}
   </header>
 }
 
@@ -265,7 +265,7 @@ function AboutPage({ navigate, onSignedIn, session }: { navigate: (path: string)
 }
 
 function SettingsPage({ boardId, navigate, session }: { boardId: string, navigate: (path: string) => void, session: AuthSession }) {
-  const [activeTab, setActiveTab] = useState<'General' | 'Participation' | 'Moderators' | 'Presentation'>('General')
+  const [activeTab, setActiveTab] = useState<'General' | 'Participation' | 'Moderation' | 'Presentation' | 'Team'>('General')
   const [saved, setSaved] = useState(false)
   const [comments, setComments] = useState(true)
   const [anonymous, setAnonymous] = useState(true)
@@ -273,36 +273,39 @@ function SettingsPage({ boardId, navigate, session }: { boardId: string, navigat
   const [inviteStatus, setInviteStatus] = useState('')
   const sendInvite = async () => {
     setInviteStatus('Sending…')
-    try { await inviteUser(boardId, inviteEmail, session.idToken); setInviteStatus(`Invitation sent to ${inviteEmail}`); setInviteEmail('') }
+    try { await assignBoardRole(boardId, inviteEmail, 'MODERATOR', session.idToken); setInviteStatus(`${inviteEmail} added as moderator`); setInviteEmail('') }
     catch (reason) { setInviteStatus(reason instanceof Error ? reason.message : 'Could not send invitation.') }
   }
-  return <div className="settings-shell"><header><button className="brand brand-button" onClick={() => navigate('/')}><span><Sparkles size={20} /></span> AMA Board</button><button className="back-board" onClick={() => navigate(`/boards/${boardId}`)}>← Back to board</button><button className="profile profile-button" title={session.email} onClick={() => navigate('/admin')}>{session.email.slice(0, 2).toUpperCase()}</button></header>
+  return <div className="settings-shell"><header><button className="brand brand-button" onClick={() => navigate('/')}><span><Sparkles size={20} /></span> AMA Board</button><button className="back-board" onClick={() => navigate(`/boards/${boardId}`)}>← Back to board</button><button className="profile profile-button" title={session.email} onClick={() => navigate('/settings')}>{session.email.slice(0, 2).toUpperCase()}</button></header>
     <main className="settings-page"><div className="settings-title"><div><span>Board administration</span><h1>Board settings</h1><p>Control how people find and participate in this AMA.</p></div><button onClick={() => { setSaved(true); window.setTimeout(() => setSaved(false), 2000) }}>{saved ? <><Check size={17} /> Saved</> : 'Save changes'}</button></div>
-      <section className="settings-grid"><aside>{(['General', 'Participation', 'Moderators', 'Presentation'] as const).map(tab => <button key={tab} className={activeTab === tab ? 'active' : ''} onClick={() => setActiveTab(tab)}>{tab}</button>)}</aside><div className="settings-panels">
+      <section className="settings-grid"><aside>{(['General', 'Participation', 'Moderation', 'Presentation', 'Team'] as const).map(tab => <button key={tab} className={activeTab === tab ? 'active' : ''} onClick={() => setActiveTab(tab)}>{tab}</button>)}</aside><div className="settings-panels">
         {activeTab === 'General' && <article><h2>Board details</h2><p>The information participants see at the top of this board.</p><label>Board title<input defaultValue="Ask the leadership team" /></label><label>Description<textarea defaultValue="Vote for what matters. We’ll answer the most important questions live." /></label><label>Board URL<input value={`/boards/${boardId}`} readOnly /></label></article>}
         {activeTab === 'Participation' && <article><h2>Access and participation</h2><p>Choose how your organisation can take part.</p><label>Board visibility<select defaultValue="unlisted"><option value="public">Public</option><option value="unlisted">Unlisted — link only</option></select></label><label>Voting mode<select defaultValue="up-down"><option value="up-down">Upvotes and downvotes</option><option value="up">Upvotes only</option><option value="none">No voting</option></select></label><div className="setting-row"><div><b>Allow comments</b><span>Participants can comment without pre-moderation.</span></div><button className={`switch ${comments ? 'on' : ''}`} onClick={() => setComments(!comments)} aria-label="Allow comments"><i /></button></div><div className="setting-row"><div><b>Allow pseudonyms</b><span>Assign a friendly identity when no name is provided.</span></div><button className={`switch ${anonymous ? 'on' : ''}`} onClick={() => setAnonymous(!anonymous)} aria-label="Allow pseudonyms"><i /></button></div></article>}
-        {activeTab === 'Moderators' && <article><h2>Board moderators</h2><p>Invite colleagues who can organise questions and control presentation mode.</p><div className="member-row"><span className="profile">{session.email.slice(0, 2).toUpperCase()}</span><div><b>{session.email}</b><small>Organisation administrator</small></div><strong>Admin</strong></div><div className="invite-row"><input type="email" value={inviteEmail} onChange={event => setInviteEmail(event.target.value)} placeholder="colleague@company.com" /><button disabled={!inviteEmail} onClick={sendInvite}>Send invitation</button></div>{inviteStatus && <p role="status">{inviteStatus}</p>}</article>}
+        {activeTab === 'Moderation' && <article><h2>Question moderation</h2><p>Control how submitted questions enter and move through the board.</p><label>New questions<select defaultValue="immediate"><option value="immediate">Publish immediately</option><option value="approval">Require approval</option></select></label><div className="setting-row"><div><b>Allow moderator editing</b><span>Moderators can correct and clarify submitted questions.</span></div><button className="switch on" aria-label="Allow moderator editing"><i /></button></div></article>}
+        {activeTab === 'Team' && <article><h2>Board team</h2><p>Assign an existing organisation member to organise questions and control presentation mode.</p><div className="member-row"><span className="profile">{session.email.slice(0, 2).toUpperCase()}</span><div><b>{session.email}</b><small>Current board owner or administrator</small></div><strong>Owner</strong></div><div className="invite-row"><input type="email" value={inviteEmail} onChange={event => setInviteEmail(event.target.value)} placeholder="existing.user@company.com" /><button disabled={!inviteEmail} onClick={sendInvite}>Add moderator</button></div>{inviteStatus && <p role="status">{inviteStatus}</p>}</article>}
         {activeTab === 'Presentation' && <article><h2>Presentation preferences</h2><p>Choose what the audience sees when a question is presented.</p><label>Presentation heading<input defaultValue="All-company AMA" /></label><div className="setting-row"><div><b>Show vote totals</b><span>Display the selected question's live score.</span></div><button className="switch on" aria-label="Show vote totals"><i /></button></div><div className="setting-row"><div><b>Show question author</b><span>Include the name or pseudonym in presentation mode.</span></div><button className="switch on" aria-label="Show question author"><i /></button></div></article>}
       </div></section>
     </main></div>
 }
 
-function AdminPage({ navigate, session, onSignOut }: { navigate: (path: string) => void, session: AuthSession, onSignOut: () => void }) {
-  const [tab, setTab] = useState<'Overview' | 'Boards' | 'Users' | 'Organisation'>('Overview')
+function AccountSettingsPage({ navigate, session, onSignOut }: { navigate: (path: string) => void, session: AuthSession, onSignOut: () => void }) {
+  const isAdmin = session.groups.includes('Admins')
+  const [tab, setTab] = useState<'Profile' | 'Notifications' | 'Security' | 'Administration'>('Profile')
   const [email, setEmail] = useState('')
   const [status, setStatus] = useState('')
   const addUser = async () => {
     setStatus('Sending…')
-    try { await inviteUser('all-company', email, session.idToken); setStatus(`Invitation sent to ${email}`); setEmail('') }
+    try { await inviteOrganizationUser(email, session.idToken); setStatus(`Invitation sent to ${email}`); setEmail('') }
     catch (reason) { setStatus(reason instanceof Error ? reason.message : 'Could not invite user.') }
   }
-  return <div className="settings-shell"><header><button className="brand brand-button" onClick={() => navigate('/')}><span><Sparkles size={20} /></span> AMA Board</button><span className="admin-label">Site administration</span><button className="logout-button" onClick={onSignOut}><LogOut size={16} /> Log out</button><span className="profile">{session.email.slice(0, 2).toUpperCase()}</span></header>
-    <main className="settings-page"><div className="settings-title"><div><span>Organisation console</span><h1>Administration</h1><p>Manage boards, users, and site-wide defaults.</p></div><button onClick={() => navigate('/boards/all-company')}>Open AMA board</button></div>
-      <section className="settings-grid"><aside>{(['Overview', 'Boards', 'Users', 'Organisation'] as const).map(item => <button key={item} className={tab === item ? 'active' : ''} onClick={() => setTab(item)}>{item}</button>)}</aside><div className="settings-panels">
-        {tab === 'Overview' && <><section className="admin-stats"><article><b>1</b><span>Active board</span></article><article><b>1</b><span>Administrator</span></article><article><b>128</b><span>Participants</span></article></section><article><h2>Welcome, {session.email}</h2><p>Use this console for organisation-wide administration. Settings for an individual AMA live on that board's settings page.</p></article></>}
-        {tab === 'Boards' && <article><h2>Boards</h2><p>Open a board to moderate questions or update its participation settings.</p><div className="board-admin-row"><div><b>Ask the leadership team</b><span>Public · accepting questions</span></div><button onClick={() => navigate('/boards/all-company/settings')}>Manage board</button></div></article>}
-        {tab === 'Users' && <article><h2>Users</h2><p>Invite a user through Cognito. They receive a temporary password by email.</p><div className="member-row"><span className="profile">{session.email.slice(0, 2).toUpperCase()}</span><div><b>{session.email}</b><small>Initial administrator</small></div><strong>Admin</strong></div><div className="invite-row"><input type="email" value={email} onChange={event => setEmail(event.target.value)} placeholder="new.user@company.com" /><button disabled={!email} onClick={addUser}>Invite user</button></div>{status && <p role="status">{status}</p>}</article>}
-        {tab === 'Organisation' && <article><h2>Organisation settings</h2><p>Defaults used when administrators create new AMA boards.</p><label>Organisation name<input defaultValue="Anyhow Only" /></label><label>Default board visibility<select defaultValue="unlisted"><option value="unlisted">Unlisted — link only</option><option value="public">Public</option></select></label><label>Default voting<select defaultValue="up-down"><option value="up-down">Upvotes and downvotes</option><option value="up">Upvotes only</option></select></label></article>}
+  const tabs: Array<typeof tab> = isAdmin ? ['Profile', 'Notifications', 'Security', 'Administration'] : ['Profile', 'Notifications', 'Security']
+  return <div className="settings-shell"><header><button className="brand brand-button" onClick={() => navigate('/')}><span><Sparkles size={20} /></span> AMA Board</button><span className="admin-label">Account settings</span><button className="logout-button" onClick={onSignOut}><LogOut size={16} /> Log out</button><span className="profile">{session.email.slice(0, 2).toUpperCase()}</span></header>
+    <main className="settings-page"><div className="settings-title"><div><span>Your account</span><h1>Settings</h1><p>Manage your profile, preferences, and security.</p></div><button onClick={() => navigate('/boards/all-company')}>My boards</button></div>
+      <section className="settings-grid"><aside>{tabs.map(item => <button key={item} className={tab === item ? 'active' : ''} onClick={() => setTab(item)}>{item}</button>)}</aside><div className="settings-panels">
+        {tab === 'Profile' && <article><h2>Profile</h2><p>Choose how you appear when participating in an AMA.</p><label>Email<input value={session.email} readOnly /></label><label>Display name<input defaultValue={session.email.split('@')[0]} /></label><label>Default posting identity<select defaultValue="ask"><option value="ask">Ask me each time</option><option value="name">Use my display name</option><option value="pseudonym">Use a pseudonym</option></select></label></article>}
+        {tab === 'Notifications' && <article><h2>Notifications</h2><p>Choose which AMA activity should reach you by email.</p><div className="setting-row"><div><b>Replies to my questions</b><span>Receive an email when someone responds.</span></div><button className="switch on" aria-label="Replies to my questions"><i /></button></div><div className="setting-row"><div><b>Board invitations</b><span>Receive invitations to moderate or join boards.</span></div><button className="switch on" aria-label="Board invitations"><i /></button></div></article>}
+        {tab === 'Security' && <article><h2>Security</h2><p>Your password and sessions are secured by Amazon Cognito.</p><label>Signed-in account<input value={session.email} readOnly /></label><button className="secondary-danger" onClick={onSignOut}><LogOut size={16} /> Log out of this browser</button></article>}
+        {tab === 'Administration' && isAdmin && <><section className="admin-stats"><article><b>1</b><span>Active board</span></article><article><b>1</b><span>Administrator</span></article><article><b>128</b><span>Participants</span></article></section><article><h2>Organisation administration</h2><p>These controls are visible only to members of the Cognito Admins group.</p><label>Organisation name<input defaultValue="Anyhow Only" /></label><label>Member board creation<select defaultValue="enabled"><option value="enabled">Enabled</option><option value="disabled">Administrators only</option></select></label><h3>Invite an organisation user</h3><div className="invite-row"><input type="email" value={email} onChange={event => setEmail(event.target.value)} placeholder="new.user@company.com" /><button disabled={!email} onClick={addUser}>Invite user</button></div>{status && <p role="status">{status}</p>}<div className="board-admin-row"><div><b>Ask the leadership team</b><span>Public · accepting questions</span></div><button onClick={() => navigate('/boards/all-company/settings')}>Manage board</button></div></article></>}
       </div></section>
     </main></div>
 }
@@ -320,15 +323,15 @@ export function App() {
     setPath(nextPath)
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
-  const signedIn = (nextSession: AuthSession) => { setSession(nextSession); navigate('/admin') }
+  const signedIn = (nextSession: AuthSession) => { setSession(nextSession); navigate('/settings') }
   const signedOut = () => { signOut(); setSession(null); navigate('/') }
   const settingsMatch = path.match(/^\/boards\/([^/]+)\/settings\/?$/)
   const boardMatch = path.match(/^\/boards\/([^/]+)\/?$/)
   if (settingsMatch && session) return <SettingsPage boardId={settingsMatch[1]} navigate={navigate} session={session} />
   if (settingsMatch) return <LandingPage navigate={navigate} onSignedIn={signedIn} session={session} />
   if (boardMatch) return <BoardPage boardId={boardMatch[1]} navigate={navigate} session={session} />
-  if (path === '/admin' && session) return <AdminPage navigate={navigate} session={session} onSignOut={signedOut} />
-  if (path === '/admin') return <LandingPage navigate={navigate} onSignedIn={signedIn} session={session} />
+  if ((path === '/settings' || path === '/admin') && session) return <AccountSettingsPage navigate={navigate} session={session} onSignOut={signedOut} />
+  if (path === '/settings' || path === '/admin') return <LandingPage navigate={navigate} onSignedIn={signedIn} session={session} />
   if (path === '/about') return <AboutPage navigate={navigate} onSignedIn={signedIn} session={session} />
   return <LandingPage navigate={navigate} onSignedIn={signedIn} session={session} />
 }
