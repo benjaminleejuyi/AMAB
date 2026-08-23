@@ -25,6 +25,10 @@ Parameters:
   MonthlyBudgetUsd:
     Type: Number
     Default: 10
+  AdminEmail:
+    Type: String
+    Description: Email address for the initial AMA Board administrator
+    AllowedPattern: '^[^@]+@[^@]+[.][^@]+$'
 
 Resources:
   UserPool:
@@ -51,8 +55,66 @@ Resources:
       ClientName: askboard-web
       UserPoolId: !Ref UserPool
       GenerateSecret: false
-      ExplicitAuthFlows: [ALLOW_USER_SRP_AUTH, ALLOW_REFRESH_TOKEN_AUTH]
+      ExplicitAuthFlows: [ALLOW_USER_SRP_AUTH, ALLOW_USER_PASSWORD_AUTH, ALLOW_REFRESH_TOKEN_AUTH]
       PreventUserExistenceErrors: ENABLED
+
+  AdminGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: Admins
+      Description: AMA Board organisation administrators
+      Precedence: 0
+      UserPoolId: !Ref UserPool
+
+  SeedAdminFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.13
+      Handler: index.handler
+      Role: !GetAtt SeedAdminRole.Arn
+      Timeout: 30
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+          def handler(event, context):
+              try:
+                  props = event['ResourceProperties']
+                  cognito = boto3.client('cognito-idp')
+                  if event['RequestType'] in ('Create', 'Update'):
+                      email = props['AdminEmail']
+                      try:
+                          cognito.admin_create_user(UserPoolId=props['UserPoolId'], Username=email, UserAttributes=[{'Name':'email','Value':email},{'Name':'email_verified','Value':'true'}], DesiredDeliveryMediums=['EMAIL'])
+                      except cognito.exceptions.UsernameExistsException:
+                          pass
+                      cognito.admin_add_user_to_group(UserPoolId=props['UserPoolId'], Username=email, GroupName='Admins')
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {'AdminEmail': props['AdminEmail']}, props['AdminEmail'])
+              except Exception as error:
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': str(error)})
+
+  SeedAdminRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement: [{ Effect: Allow, Principal: { Service: lambda.amazonaws.com }, Action: 'sts:AssumeRole' }]
+      ManagedPolicyArns: [arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole]
+      Policies:
+        - PolicyName: SeedCognitoAdmin
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [cognito-idp:AdminCreateUser, cognito-idp:AdminAddUserToGroup]
+                Resource: !GetAtt UserPool.Arn
+
+  SeedAdmin:
+    Type: Custom::SeedAdmin
+    DependsOn: AdminGroup
+    Properties:
+      ServiceToken: !GetAtt SeedAdminFunction.Arn
+      UserPoolId: !Ref UserPool
+      AdminEmail: !Ref AdminEmail
 
   BoardTable:
     Type: AWS::DynamoDB::Table
@@ -93,9 +155,14 @@ Resources:
       Environment:
         Variables:
           TABLE_NAME: !Ref BoardTable
+          USER_POOL_ID: !Ref UserPool
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref BoardTable
+        - Statement:
+            - Effect: Allow
+              Action: cognito-idp:AdminCreateUser
+              Resource: !GetAtt UserPool.Arn
 
   AppSyncApi:
     Type: AWS::AppSync::GraphQLApi
@@ -186,7 +253,7 @@ Resources:
         input CastVoteInput { boardId: ID!, questionId: ID!, value: Int! }
         input AddCommentInput { boardId: ID!, questionId: ID!, body: String! }
         type Query { getBoard(id: ID!): Board @aws_cognito_user_pools @aws_api_key, listQuestions(boardId: ID!, limit: Int): QuestionConnection! @aws_cognito_user_pools @aws_api_key }
-        type Mutation { createBoard(input: CreateBoardInput!): Board! @aws_cognito_user_pools, createQuestion(input: CreateQuestionInput!): Question! @aws_cognito_user_pools @aws_api_key, castVote(input: CastVoteInput!): Question! @aws_cognito_user_pools @aws_api_key, addComment(input: AddCommentInput!): Comment! @aws_cognito_user_pools @aws_api_key, selectQuestion(boardId: ID!, questionId: ID): Board! @aws_cognito_user_pools, assignModerator(boardId: ID!, userId: ID!): BoardMember! @aws_cognito_user_pools }
+        type Mutation { createBoard(input: CreateBoardInput!): Board! @aws_cognito_user_pools, createQuestion(input: CreateQuestionInput!): Question! @aws_cognito_user_pools @aws_api_key, castVote(input: CastVoteInput!): Question! @aws_cognito_user_pools @aws_api_key, addComment(input: AddCommentInput!): Comment! @aws_cognito_user_pools @aws_api_key, selectQuestion(boardId: ID!, questionId: ID): Board! @aws_cognito_user_pools, assignModerator(boardId: ID!, userId: ID!): BoardMember! @aws_cognito_user_pools, inviteUser(boardId: ID!, email: AWSEmail!): BoardMember! @aws_cognito_user_pools }
         type Subscription { questionChanged(boardId: ID!): Question @aws_subscribe(mutations: ["createQuestion", "castVote"]) @aws_cognito_user_pools @aws_api_key, commentAdded(boardId: ID!): Comment @aws_subscribe(mutations: ["addComment"]) @aws_cognito_user_pools @aws_api_key, presentationChanged(boardId: ID!): Board @aws_subscribe(mutations: ["selectQuestion"]) @aws_cognito_user_pools @aws_api_key }
         schema { query: Query, mutation: Mutation, subscription: Subscription }
 
@@ -198,6 +265,7 @@ Resources:
   AddCommentResolver: { Type: AWS::AppSync::Resolver, DependsOn: AppSyncSchema, Properties: { ApiId: !GetAtt AppSyncApi.ApiId, TypeName: Mutation, FieldName: addComment, DataSourceName: !GetAtt AppSyncDataSource.Name, RequestMappingTemplate: '{"version":"2018-05-29","operation":"Invoke","payload":$util.toJson($context)}', ResponseMappingTemplate: '$util.toJson($context.result)' } }
   SelectQuestionResolver: { Type: AWS::AppSync::Resolver, DependsOn: AppSyncSchema, Properties: { ApiId: !GetAtt AppSyncApi.ApiId, TypeName: Mutation, FieldName: selectQuestion, DataSourceName: !GetAtt AppSyncDataSource.Name, RequestMappingTemplate: '{"version":"2018-05-29","operation":"Invoke","payload":$util.toJson($context)}', ResponseMappingTemplate: '$util.toJson($context.result)' } }
   AssignModeratorResolver: { Type: AWS::AppSync::Resolver, DependsOn: AppSyncSchema, Properties: { ApiId: !GetAtt AppSyncApi.ApiId, TypeName: Mutation, FieldName: assignModerator, DataSourceName: !GetAtt AppSyncDataSource.Name, RequestMappingTemplate: '{"version":"2018-05-29","operation":"Invoke","payload":$util.toJson($context)}', ResponseMappingTemplate: '$util.toJson($context.result)' } }
+  InviteUserResolver: { Type: AWS::AppSync::Resolver, DependsOn: AppSyncSchema, Properties: { ApiId: !GetAtt AppSyncApi.ApiId, TypeName: Mutation, FieldName: inviteUser, DataSourceName: !GetAtt AppSyncDataSource.Name, RequestMappingTemplate: '{"version":"2018-05-29","operation":"Invoke","payload":$util.toJson($context)}', ResponseMappingTemplate: '$util.toJson($context.result)' } }
 
   WebBucket:
     Type: AWS::S3::Bucket
@@ -292,3 +360,5 @@ Outputs:
   DistributionId: { Value: !Ref Distribution }
   CloudFrontUrl: { Value: !Sub 'https://${Distribution.DomainName}' }
   ApplicationUrl: { Value: !Sub 'https://${DomainName}' }
+  AwsRegion: { Value: !Ref AWS::Region }
+  AdminEmail: { Value: !Ref AdminEmail }

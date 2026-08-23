@@ -11,6 +11,7 @@ DEPLOY_REGION="${AWS_REGION:-ap-southeast-1}"
 CERTIFICATE_REGION="us-east-1"
 DOMAIN_NAME="${DOMAIN_NAME:-ama.anyhowonly.com}"
 HOSTED_ZONE_NAME="${HOSTED_ZONE_NAME:-anyhowonly.com}"
+ADMIN_EMAIL="${ADMIN_EMAIL:-admin@anyhowonly.com}"
 
 command -v sam >/dev/null || { echo "AWS SAM CLI is required: https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html" >&2; exit 1; }
 command -v aws >/dev/null || { echo "AWS CLI is required and must be authenticated." >&2; exit 1; }
@@ -34,7 +35,6 @@ else
   echo "package-lock.json is not present; running npm install to create it."
   npm install
 fi
-npm run build
 
 echo "Deploying CloudFront certificate in ${CERTIFICATE_REGION}..."
 aws cloudformation deploy \
@@ -65,11 +65,26 @@ sam deploy \
   --region "${DEPLOY_REGION}" \
   --resolve-s3 \
   --capabilities CAPABILITY_IAM \
-  --parameter-overrides "Environment=${ENVIRONMENT}" "DomainName=${DOMAIN_NAME}" "HostedZoneId=${HOSTED_ZONE_ID}" "CertificateArn=${CERTIFICATE_ARN}" "ApiKeyExpiresEpoch=${EXPIRY}" "MonthlyBudgetUsd=${BUDGET_USD}" \
+  --parameter-overrides "Environment=${ENVIRONMENT}" "DomainName=${DOMAIN_NAME}" "HostedZoneId=${HOSTED_ZONE_ID}" "CertificateArn=${CERTIFICATE_ARN}" "ApiKeyExpiresEpoch=${EXPIRY}" "MonthlyBudgetUsd=${BUDGET_USD}" "AdminEmail=${ADMIN_EMAIL}" \
   --no-fail-on-empty-changeset
 
 BUCKET="$(aws cloudformation describe-stacks --region "${DEPLOY_REGION}" --stack-name "${STACK_NAME}" --query "Stacks[0].Outputs[?OutputKey=='WebBucketName'].OutputValue" --output text)"
 DISTRIBUTION="$(aws cloudformation describe-stacks --region "${DEPLOY_REGION}" --stack-name "${STACK_NAME}" --query "Stacks[0].Outputs[?OutputKey=='DistributionId'].OutputValue" --output text)"
+USER_POOL_ID="$(aws cloudformation describe-stacks --region "${DEPLOY_REGION}" --stack-name "${STACK_NAME}" --query "Stacks[0].Outputs[?OutputKey=='UserPoolId'].OutputValue" --output text)"
+USER_POOL_CLIENT_ID="$(aws cloudformation describe-stacks --region "${DEPLOY_REGION}" --stack-name "${STACK_NAME}" --query "Stacks[0].Outputs[?OutputKey=='UserPoolClientId'].OutputValue" --output text)"
+APPSYNC_ENDPOINT="$(aws cloudformation describe-stacks --region "${DEPLOY_REGION}" --stack-name "${STACK_NAME}" --query "Stacks[0].Outputs[?OutputKey=='AppSyncEndpoint'].OutputValue" --output text)"
+APPSYNC_API_KEY="$(aws cloudformation describe-stacks --region "${DEPLOY_REGION}" --stack-name "${STACK_NAME}" --query "Stacks[0].Outputs[?OutputKey=='AppSyncApiKey'].OutputValue" --output text)"
+
+npm run build
+cat > dist/config.js <<EOF
+window.__AMA_BOARD_CONFIG__ = {
+  region: "${DEPLOY_REGION}",
+  userPoolId: "${USER_POOL_ID}",
+  userPoolClientId: "${USER_POOL_CLIENT_ID}",
+  appSyncEndpoint: "${APPSYNC_ENDPOINT}",
+  appSyncApiKey: "${APPSYNC_API_KEY}"
+}
+EOF
 
 echo "Publishing frontend to s3://${BUCKET}..."
 aws s3 sync dist/ "s3://${BUCKET}" --delete

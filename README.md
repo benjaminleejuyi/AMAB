@@ -46,6 +46,14 @@ The first deployment uses `npm install` when the repository does not yet contain
 
 The deployment script does not hard-code or preflight a local Python executable. SAM reads the Lambda runtime from the infrastructure template. If the matching interpreter is not installed locally and a container runtime is available, run the deployment with `SAM_BUILD_USE_CONTAINER=true` to make SAM build in its runtime container.
 
+Set `ADMIN_EMAIL` to the initial organisation administrator when deploying. Cognito creates the account, adds it to the `Admins` group, and sends a temporary-password invitation. The default is `admin@anyhowonly.com`, but an actively monitored mailbox should be supplied:
+
+```bash
+ADMIN_EMAIL=your.name@anyhowonly.com ./scripts/deploy.sh production
+```
+
+The deployment generates the browser's Cognito and AppSync configuration from CloudFormation outputs. The administrator must complete Cognito's temporary-password flow before using the login form. Once signed in, the administrator can open board settings and invite additional moderators by email.
+
 The script discovers the Route 53 zone for `anyhowonly.com`, builds the frontend, deploys a small certificate stack in `us-east-1`, and deploys the main SAM/CloudFormation application stack in `ap-southeast-1`. It then uploads `dist/` to the private S3 origin, invalidates CloudFront, and prints the application, AppSync, and Cognito outputs. The application URL is `https://ama.anyhowonly.com`.
 
 CloudFront requires its ACM certificate to be in `us-east-1`, even when the application runs elsewhere. The separate `askboard-<environment>-certificate` stack satisfies that restriction while the main stack defaults to `ap-southeast-1`. Set `AWS_REGION` only if you want the main application stack in another region; it does not change the certificate region.

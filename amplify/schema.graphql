@@ -50,6 +50,7 @@ type Mutation {
   addComment(input: AddCommentInput!): Comment! @aws_cognito_user_pools @aws_api_key
   selectQuestion(boardId: ID!, questionId: ID): Board! @aws_cognito_user_pools
   assignModerator(boardId: ID!, userId: ID!): BoardMember! @aws_cognito_user_pools
+  inviteUser(boardId: ID!, email: AWSEmail!): BoardMember! @aws_cognito_user_pools
 }
 
 type Query {

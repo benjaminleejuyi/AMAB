@@ -6,6 +6,7 @@ import {
 } from 'lucide-react'
 import { initialQuestions } from './data'
 import type { Question, QuestionCategory } from './types'
+import { completeNewPassword, inviteUser, NewPasswordRequiredError, readSession, signIn, type AuthSession } from './auth'
 
 type SortMode = 'Top' | 'Newest' | 'Oldest'
 
@@ -196,21 +197,38 @@ function PublicHeader({ navigate, onLogin }: { navigate: (path: string) => void,
   </header>
 }
 
-function LoginDialog({ onClose, navigate }: { onClose: () => void, navigate: (path: string) => void }) {
+function LoginDialog({ onClose, onSignedIn }: { onClose: () => void, onSignedIn: (session: AuthSession) => void }) {
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [challengeSession, setChallengeSession] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const submit = async () => {
+    setLoading(true); setError('')
+    try { onSignedIn(challengeSession ? await completeNewPassword(email, newPassword, challengeSession) : await signIn(email, password)) }
+    catch (reason) {
+      if (reason instanceof NewPasswordRequiredError) setChallengeSession(reason.challengeSession)
+      setError(reason instanceof Error ? reason.message : 'Sign-in failed.')
+    }
+    finally { setLoading(false) }
+  }
   return <div className="modal-backdrop" onMouseDown={onClose}>
     <section className="login-dialog" role="dialog" aria-modal="true" aria-labelledby="login-title" onMouseDown={event => event.stopPropagation()}>
       <button className="modal-close" onClick={onClose} aria-label="Close"><X size={20} /></button>
       <span className="composer-icon"><LockKeyhole size={22} /></span>
       <h2 id="login-title">Welcome back</h2><p>Sign in with your organisation account to manage boards.</p>
-      <label>Email address<input type="email" placeholder="you@company.com" /></label>
-      <label>Password<input type="password" placeholder="••••••••••••" /></label>
-      <button className="dialog-primary" onClick={() => navigate('/boards/all-company')}>Continue <ArrowRight size={17} /></button>
-      <small>Authentication will be provided by your organisation’s Cognito account.</small>
+      <label>Email address<input type="email" value={email} onChange={event => setEmail(event.target.value)} placeholder="you@company.com" /></label>
+      <label>Password<input type="password" value={password} onChange={event => setPassword(event.target.value)} onKeyDown={event => event.key === 'Enter' && submit()} placeholder="••••••••••••" /></label>
+      {challengeSession && <label>New permanent password<input type="password" value={newPassword} onChange={event => setNewPassword(event.target.value)} placeholder="At least 12 characters" /></label>}
+      {error && <p className="auth-error" role="alert">{error}</p>}
+      <button className="dialog-primary" disabled={loading || !email || !password || (!!challengeSession && !newPassword)} onClick={submit}>{loading ? 'Signing in…' : challengeSession ? 'Set password and sign in' : 'Continue'} <ArrowRight size={17} /></button>
+      <small>Secure authentication is provided by Amazon Cognito.</small>
     </section>
   </div>
 }
 
-function LandingPage({ navigate }: { navigate: (path: string) => void }) {
+function LandingPage({ navigate, onSignedIn }: { navigate: (path: string) => void, onSignedIn: (session: AuthSession) => void }) {
   const [loginOpen, setLoginOpen] = useState(false)
   return <div className="marketing-shell">
     <PublicHeader navigate={navigate} onLogin={() => setLoginOpen(true)} />
@@ -232,34 +250,43 @@ function LandingPage({ navigate }: { navigate: (path: string) => void }) {
       </section>
       <section className="feature-strip"><div><MessageCircle /><h3>Ask safely</h3><p>Use your name or a friendly pseudonym.</p></div><div><BarChart3 /><h3>Prioritise together</h3><p>Visible voting brings the key topics forward.</p></div><div><Presentation /><h3>Answer with focus</h3><p>Move any question into presentation mode.</p></div></section>
     </main>
-    {loginOpen && <LoginDialog onClose={() => setLoginOpen(false)} navigate={navigate} />}
+    {loginOpen && <LoginDialog onClose={() => setLoginOpen(false)} onSignedIn={onSignedIn} />}
   </div>
 }
 
-function AboutPage({ navigate }: { navigate: (path: string) => void }) {
+function AboutPage({ navigate, onSignedIn }: { navigate: (path: string) => void, onSignedIn: (session: AuthSession) => void }) {
   const [loginOpen, setLoginOpen] = useState(false)
   return <div className="marketing-shell"><PublicHeader navigate={navigate} onLogin={() => setLoginOpen(true)} />
     <main className="simple-page"><div className="marketing-eyebrow">About AMA Board</div><h1>Honest questions make<br />stronger organisations.</h1><p className="page-lead">AMA Board creates an open, organised space for every voice—before, during, and after your AMA.</p>
       <section className="values-grid"><article><Globe2 /><h2>Open by default</h2><p>Public and unlisted boards make it effortless to join while administrators stay in control.</p></article><article><ShieldCheck /><h2>Safe to speak</h2><p>Participants can identify themselves or use a consistent, friendly pseudonym.</p></article><article><Presentation /><h2>Built for the room</h2><p>Present the selected question clearly without losing the live audience conversation.</p></article></section>
       <button className="page-cta" onClick={() => navigate('/boards/all-company')}>See AMA Board in action <ArrowRight size={18} /></button>
-    </main>{loginOpen && <LoginDialog onClose={() => setLoginOpen(false)} navigate={navigate} />}</div>
+    </main>{loginOpen && <LoginDialog onClose={() => setLoginOpen(false)} onSignedIn={onSignedIn} />}</div>
 }
 
-function SettingsPage({ boardId, navigate }: { boardId: string, navigate: (path: string) => void }) {
+function SettingsPage({ boardId, navigate, session }: { boardId: string, navigate: (path: string) => void, session: AuthSession }) {
   const [saved, setSaved] = useState(false)
   const [comments, setComments] = useState(true)
   const [anonymous, setAnonymous] = useState(true)
+  const [inviteEmail, setInviteEmail] = useState('')
+  const [inviteStatus, setInviteStatus] = useState('')
+  const sendInvite = async () => {
+    setInviteStatus('Sending…')
+    try { await inviteUser(boardId, inviteEmail, session.idToken); setInviteStatus(`Invitation sent to ${inviteEmail}`); setInviteEmail('') }
+    catch (reason) { setInviteStatus(reason instanceof Error ? reason.message : 'Could not send invitation.') }
+  }
   return <div className="settings-shell"><header><button className="brand brand-button" onClick={() => navigate('/')}><span><Sparkles size={20} /></span> AMA Board</button><button className="back-board" onClick={() => navigate(`/boards/${boardId}`)}>← Back to board</button><span className="profile">MC</span></header>
     <main className="settings-page"><div className="settings-title"><div><span>Board administration</span><h1>Board settings</h1><p>Control how people find and participate in this AMA.</p></div><button onClick={() => { setSaved(true); window.setTimeout(() => setSaved(false), 2000) }}>{saved ? <><Check size={17} /> Saved</> : 'Save changes'}</button></div>
       <section className="settings-grid"><aside><button className="active">General</button><button>Participation</button><button>Moderators</button><button>Presentation</button></aside><div className="settings-panels">
         <article><h2>Board details</h2><p>The information participants see at the top of this board.</p><label>Board title<input defaultValue="Ask the leadership team" /></label><label>Description<textarea defaultValue="Vote for what matters. We’ll answer the most important questions live." /></label></article>
         <article><h2>Access and participation</h2><p>Choose how your organisation can take part.</p><label>Board visibility<select defaultValue="unlisted"><option value="public">Public</option><option value="unlisted">Unlisted — link only</option></select></label><div className="setting-row"><div><b>Allow comments</b><span>Participants can comment without pre-moderation.</span></div><button className={`switch ${comments ? 'on' : ''}`} onClick={() => setComments(!comments)} aria-label="Allow comments"><i /></button></div><div className="setting-row"><div><b>Allow pseudonyms</b><span>Assign a friendly identity when no name is provided.</span></div><button className={`switch ${anonymous ? 'on' : ''}`} onClick={() => setAnonymous(!anonymous)} aria-label="Allow pseudonyms"><i /></button></div></article>
+        <article><h2>Invite a moderator</h2><p>Cognito sends a temporary-password invitation to the new user.</p><div className="invite-row"><input type="email" value={inviteEmail} onChange={event => setInviteEmail(event.target.value)} placeholder="colleague@company.com" /><button disabled={!inviteEmail} onClick={sendInvite}>Send invitation</button></div>{inviteStatus && <p role="status">{inviteStatus}</p>}</article>
       </div></section>
     </main></div>
 }
 
 export function App() {
   const [path, setPath] = useState(window.location.pathname)
+  const [session, setSession] = useState<AuthSession | null>(() => readSession())
   useEffect(() => {
     const onPopState = () => setPath(window.location.pathname)
     window.addEventListener('popstate', onPopState)
@@ -270,10 +297,12 @@ export function App() {
     setPath(nextPath)
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
+  const signedIn = (nextSession: AuthSession) => { setSession(nextSession); navigate('/boards/all-company') }
   const settingsMatch = path.match(/^\/boards\/([^/]+)\/settings\/?$/)
   const boardMatch = path.match(/^\/boards\/([^/]+)\/?$/)
-  if (settingsMatch) return <SettingsPage boardId={settingsMatch[1]} navigate={navigate} />
+  if (settingsMatch && session) return <SettingsPage boardId={settingsMatch[1]} navigate={navigate} session={session} />
+  if (settingsMatch) return <LandingPage navigate={navigate} onSignedIn={signedIn} />
   if (boardMatch) return <BoardPage boardId={boardMatch[1]} navigate={navigate} />
-  if (path === '/about') return <AboutPage navigate={navigate} />
-  return <LandingPage navigate={navigate} />
+  if (path === '/about') return <AboutPage navigate={navigate} onSignedIn={signedIn} />
+  return <LandingPage navigate={navigate} onSignedIn={signedIn} />
 }

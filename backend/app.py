@@ -11,6 +11,7 @@ import boto3
 from boto3.dynamodb.conditions import Key
 
 TABLE_NAME = os.environ["TABLE_NAME"]
+USER_POOL_ID = os.environ["USER_POOL_ID"]
 table = boto3.resource("dynamodb").Table(TABLE_NAME)
 
 
@@ -40,7 +41,9 @@ def _get_board(board_id: str) -> dict:
     return result
 
 
-def _require_board_role(board_id: str, user_id: str, owner_only: bool = False) -> None:
+def _require_board_role(board_id: str, user_id: str, owner_only: bool = False, organisation_admin: bool = False) -> None:
+    if organisation_admin:
+        return
     board = _get_board(board_id)
     if board["createdBy"] == user_id:
         return
@@ -163,10 +166,29 @@ def assign_moderator(args: dict, user_id: str) -> dict:
     return _public(item)
 
 
+def invite_user(args: dict, user_id: str, organisation_admin: bool) -> dict:
+    _require_board_role(args["boardId"], user_id, owner_only=True, organisation_admin=organisation_admin)
+    response = boto3.client("cognito-idp").admin_create_user(
+        UserPoolId=USER_POOL_ID,
+        Username=args["email"],
+        UserAttributes=[{"Name": "email", "Value": args["email"]}, {"Name": "email_verified", "Value": "true"}],
+        DesiredDeliveryMediums=["EMAIL"],
+    )
+    invited_user_id = response["User"]["Username"]
+    item = {"PK": f"BOARD#{args['boardId']}", "SK": f"MEMBER#{invited_user_id}", "entity": "MEMBER", "boardId": args["boardId"], "userId": invited_user_id, "role": "MODERATOR"}
+    table.put_item(Item=item)
+    return _public(item)
+
+
 def handler(event: dict, _context: object) -> dict:
     field = event["info"]["fieldName"]
     args = event.get("arguments") or {}
     user_id, authenticated = _identity(event)
+    claims = (event.get("identity") or {}).get("claims") or {}
+    groups = claims.get("cognito:groups") or []
+    if isinstance(groups, str):
+        groups = [groups]
+    organisation_admin = "Admins" in groups
     handlers = {
         "getBoard": lambda: get_board(args), "listQuestions": lambda: list_questions(args),
         "createBoard": lambda: create_board(args, user_id, authenticated),
@@ -174,6 +196,7 @@ def handler(event: dict, _context: object) -> dict:
         "castVote": lambda: cast_vote(args, user_id), "addComment": lambda: add_comment(args, user_id),
         "selectQuestion": lambda: select_question(args, user_id),
         "assignModerator": lambda: assign_moderator(args, user_id),
+        "inviteUser": lambda: invite_user(args, user_id, organisation_admin),
     }
     if field not in handlers:
         raise ValueError(f"Unsupported field: {field}")
