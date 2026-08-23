@@ -19,17 +19,8 @@ declare global {
 }
 
 export const appConfig = (): AppConfig => window.__AMA_BOARD_CONFIG__ ?? {}
-
-function tokenClaims(idToken: string): { email?: string, 'cognito:groups'?: string[], exp?: number } {
-  return JSON.parse(atob(idToken.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')))
-}
-
-function createSession(result: { AccessToken: string, IdToken: string, RefreshToken?: string }, fallbackEmail: string): AuthSession {
-  const claims = tokenClaims(result.IdToken)
-  const session = { accessToken: result.AccessToken, idToken: result.IdToken, refreshToken: result.RefreshToken, email: claims.email ?? fallbackEmail, groups: claims['cognito:groups'] ?? [] }
-  sessionStorage.setItem('ama-board-session', JSON.stringify(session))
-  return session
-}
+const tokenPayload = (token: string) => JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')))
+const tokenGroups = (token: string): string[] => tokenPayload(token)['cognito:groups'] ?? []
 
 export class NewPasswordRequiredError extends Error {
   constructor(public challengeSession: string) { super('Choose a permanent password to finish setting up your account.') }
@@ -46,7 +37,10 @@ export async function signIn(email: string, password: string): Promise<AuthSessi
   const payload = await response.json()
   if (!response.ok) throw new Error(payload.message || 'Sign-in failed.')
   if (payload.ChallengeName === 'NEW_PASSWORD_REQUIRED') throw new NewPasswordRequiredError(payload.Session)
-  return createSession(payload.AuthenticationResult, email)
+  const result = payload.AuthenticationResult
+  const session = { accessToken: result.AccessToken, idToken: result.IdToken, refreshToken: result.RefreshToken, email, groups: tokenGroups(result.IdToken) }
+  sessionStorage.setItem('ama-board-session', JSON.stringify(session))
+  return session
 }
 
 export async function completeNewPassword(email: string, password: string, challengeSession: string): Promise<AuthSession> {
@@ -58,40 +52,46 @@ export async function completeNewPassword(email: string, password: string, chall
   })
   const payload = await response.json()
   if (!response.ok) throw new Error(payload.message || 'Password setup failed.')
-  return createSession(payload.AuthenticationResult, email)
+  const result = payload.AuthenticationResult
+  const session = { accessToken: result.AccessToken, idToken: result.IdToken, refreshToken: result.RefreshToken, email, groups: tokenGroups(result.IdToken) }
+  sessionStorage.setItem('ama-board-session', JSON.stringify(session))
+  return session
 }
 
 export function readSession(): AuthSession | null {
   try {
     const session: AuthSession | null = JSON.parse(sessionStorage.getItem('ama-board-session') || 'null')
     if (!session) return null
-    const payload = tokenClaims(session.idToken)
-    if (!payload.exp || payload.exp * 1000 <= Date.now()) { signOut(); return null }
-    return { ...session, email: payload.email ?? session.email, groups: payload['cognito:groups'] ?? session.groups ?? [] }
+    const payload = tokenPayload(session.idToken)
+    if (payload.exp * 1000 <= Date.now()) { signOut(); return null }
+    session.groups = payload['cognito:groups'] ?? []
+    return session
   }
   catch { return null }
 }
 
 export function signOut() { sessionStorage.removeItem('ama-board-session') }
 
-async function appSyncMutation(query: string, variables: Record<string, string>, idToken: string) {
+export async function inviteUser(boardId: string, email: string, idToken: string) {
   const config = appConfig()
   if (!config.appSyncEndpoint) throw new Error('AppSync has not been configured for this deployment.')
   const response = await fetch(config.appSyncEndpoint, {
     method: 'POST', headers: { 'content-type': 'application/json', Authorization: idToken },
-    body: JSON.stringify({ query, variables }),
+    body: JSON.stringify({ query: 'mutation Invite($boardId: ID!, $email: AWSEmail!) { inviteUser(boardId: $boardId, email: $email) { boardId userId role } }', variables: { boardId, email } }),
   })
   const payload = await response.json()
   if (!response.ok || payload.errors) throw new Error(payload.errors?.[0]?.message || 'Could not invite user.')
-  return payload.data
+  return payload.data.inviteUser
 }
 
-export async function inviteOrganizationUser(email: string, idToken: string) {
-  const data = await appSyncMutation('mutation InviteUser($email: AWSEmail!) { inviteOrganizationUser(email: $email) { userId email status } }', { email }, idToken)
-  return data.inviteOrganizationUser
-}
-
-export async function assignBoardRole(boardId: string, email: string, role: 'OWNER' | 'MODERATOR', idToken: string) {
-  const data = await appSyncMutation('mutation AssignRole($boardId: ID!, $email: AWSEmail!, $role: BoardRole!) { assignBoardRole(boardId: $boardId, email: $email, role: $role) { boardId userId role } }', { boardId, email, role }, idToken)
-  return data.assignBoardRole
+export async function createBoard(title: string, description: string, idToken: string) {
+  const config = appConfig()
+  if (!config.appSyncEndpoint) throw new Error('AppSync has not been configured for this deployment.')
+  const response = await fetch(config.appSyncEndpoint, {
+    method: 'POST', headers: { 'content-type': 'application/json', Authorization: idToken },
+    body: JSON.stringify({ query: 'mutation CreateBoard($input: CreateBoardInput!) { createBoard(input: $input) { id title description visibility postingPolicy votingMode } }', variables: { input: { title, description, visibility: 'UNLISTED', postingPolicy: 'ANYONE', votingMode: 'UP_DOWN', commentsEnabled: true } } }),
+  })
+  const payload = await response.json()
+  if (!response.ok || payload.errors) throw new Error(payload.errors?.[0]?.message || 'Could not create board.')
+  return payload.data.createBoard as { id: string, title: string, description?: string }
 }

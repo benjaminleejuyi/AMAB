@@ -3,13 +3,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { App } from './App'
 
 describe('AMA board', () => {
-  const idToken = `x.${btoa(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 3600, email: 'admin@example.com', 'cognito:groups': ['Admins'] }))}.x`
+  const idToken = `x.${btoa(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 3600, 'cognito:groups': ['Admins'] }))}.x`
   beforeEach(() => {
+    vi.unstubAllGlobals()
     window.history.replaceState({}, '', '/')
     window.scrollTo = vi.fn()
     sessionStorage.clear()
   })
-  afterEach(() => { cleanup(); vi.unstubAllGlobals() })
+  afterEach(cleanup)
 
   it('shows a product landing page at the root', () => {
     render(<App />)
@@ -44,7 +45,7 @@ describe('AMA board', () => {
     fireEvent.change(screen.getByPlaceholderText('you@company.com'), { target: { value: 'admin@example.com' } })
     fireEvent.change(screen.getByPlaceholderText('••••••••••••'), { target: { value: 'secret-password' } })
     fireEvent.click(screen.getByRole('button', { name: /continue/i }))
-    await waitFor(() => expect(window.location.pathname).toBe('/settings'))
+    await waitFor(() => expect(window.location.pathname).toBe('/admin'))
   })
 
   it('opens settings for an authenticated administrator', () => {
@@ -56,27 +57,30 @@ describe('AMA board', () => {
     expect(window.location.pathname).toBe('/boards/all-company/settings')
     fireEvent.click(screen.getByRole('button', { name: 'Participation' }))
     expect(screen.getByRole('heading', { name: /access and participation/i })).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Team' }))
-    expect(screen.getByRole('heading', { name: /board team/i })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Moderators' }))
+    expect(screen.getByRole('heading', { name: /board moderators/i })).toBeInTheDocument()
   })
 
-  it('shows account settings with an administrator-only tab', () => {
+  it('shows the signed-in account and site administration', () => {
     sessionStorage.setItem('ama-board-session', JSON.stringify({ accessToken: 'access', idToken, email: 'admin@example.com', groups: ['Admins'] }))
     render(<App />)
     expect(screen.queryByRole('button', { name: /log in/i })).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: /account/i }))
-    expect(screen.getByRole('heading', { name: 'Settings' })).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Administration' }))
-    expect(screen.getByRole('heading', { name: /organisation administration/i })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /admin@example.com/i }))
+    fireEvent.click(screen.getByRole('button', { name: /admin panel/i }))
+    expect(screen.getByRole('heading', { name: 'Administration' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: /welcome, admin@example.com/i })).toBeInTheDocument()
   })
 
-  it('does not expose administration to a regular member', () => {
-    const memberToken = `x.${btoa(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 3600, email: 'member@example.com', 'cognito:groups': ['Users'] }))}.x`
-    sessionStorage.setItem('ama-board-session', JSON.stringify({ accessToken: 'access', idToken: memberToken, email: 'member@example.com', groups: ['Users'] }))
-    window.history.replaceState({}, '', '/settings')
+  it('creates a board from the admin panel', async () => {
+    window.history.replaceState({}, '', '/admin')
+    sessionStorage.setItem('ama-board-session', JSON.stringify({ accessToken: 'access', idToken, email: 'admin@example.com', groups: ['Admins'] }))
+    window.__AMA_BOARD_CONFIG__ = { appSyncEndpoint: 'https://appsync.example/graphql' }
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ data: { createBoard: { id: 'new-board', title: 'Product AMA' } } }) }))
     render(<App />)
-    expect(screen.getByRole('heading', { name: 'Settings' })).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Administration' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /create board/i }))
+    fireEvent.change(screen.getByPlaceholderText(/quarterly leadership/i), { target: { value: 'Product AMA' } })
+    fireEvent.click(screen.getAllByRole('button', { name: 'Create board' })[1])
+    await waitFor(() => expect(window.location.pathname).toBe('/boards/new-board/settings'))
   })
 
   it('opens the about page', () => {

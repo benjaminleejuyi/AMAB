@@ -54,7 +54,7 @@ ADMIN_EMAIL=your.name@anyhowonly.com ./scripts/deploy.sh production
 
 The deployment generates the browser's Cognito and AppSync configuration from CloudFormation outputs. On the first login, the form handles Cognito's temporary-password challenge and asks the administrator to choose a permanent password. Once signed in, the administrator can open board settings and invite additional moderators by email.
 
-Every authenticated user uses `/settings` for their profile, notifications, and security. Members of the Cognito `Admins` group see an additional Administration tab there for organisation-wide users, boards, and defaults. Board-specific participation, moderation, team, and presentation controls remain under `/boards/<board-id>/settings`. Signed-out visitors continue to see Log in; signed-in users receive an Account action instead. Logging out clears the browser session.
+Authenticated users keep their account identity in the top-right menu. Organization administrators receive an **Admin panel** entry inside that menu and an **Administration** tab in personal settings; regular members do not. Administrators use `/admin` for organization-wide users, board creation, and defaults, while board-specific controls remain under `/boards/<board-id>/settings`. Participant totals are not fabricated when analytics have not been connected.
 
 The script discovers the Route 53 zone for `anyhowonly.com`, builds the frontend, deploys a small certificate stack in `us-east-1`, and deploys the main SAM/CloudFormation application stack in `ap-southeast-1`. It then uploads `dist/` to the private S3 origin, invalidates CloudFront, and prints the application, AppSync, and Cognito outputs. The application URL is `https://ama.anyhowonly.com`.
 
