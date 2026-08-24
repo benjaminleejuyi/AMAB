@@ -1,0 +1,392 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Askboard serverless infrastructure (AppSync, Cognito, Lambda, DynamoDB, S3 and CloudFront)
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedPattern: '[a-z0-9-]+'
+  DomainName:
+    Type: String
+    Default: ama.anyhowonly.com
+    Description: Fully qualified hostname for the Askboard frontend
+    AllowedPattern: '^(?=.{1,253}$)([a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}$'
+  HostedZoneId:
+    Type: AWS::Route53::HostedZone::Id
+    Description: Route 53 public hosted zone ID for anyhowonly.com
+  CertificateArn:
+    Type: String
+    Description: ACM certificate ARN created by the Askboard certificate stack in us-east-1
+    AllowedPattern: '^arn:[^:]+:acm:us-east-1:[0-9]{12}:certificate/.+$'
+  ApiKeyExpiresEpoch:
+    Type: Number
+    Description: API key expiry as Unix epoch seconds (maximum 365 days from deployment)
+  MonthlyBudgetUsd:
+    Type: Number
+    Default: 10
+  AdminEmail:
+    Type: String
+    Description: Email address for the initial AMA Board administrator
+    AllowedPattern: '^[^@]+@[^@]+[.][^@]+$'
+
+Resources:
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub askboard-${Environment}
+      UsernameAttributes: [email]
+      AutoVerifiedAttributes: [email]
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: true
+        InviteMessageTemplate:
+          EmailSubject: Your AMA Board invitation
+          EmailMessage: 'You have been invited to AMA Board. Sign in with {username} and temporary password {####}.'
+      DeletionProtection: INACTIVE
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 12
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+          RequireUppercase: true
+      UserPoolTags:
+        Application: Askboard
+        Environment: !Ref Environment
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: askboard-web
+      UserPoolId: !Ref UserPool
+      GenerateSecret: false
+      ExplicitAuthFlows: [ALLOW_USER_SRP_AUTH, ALLOW_USER_PASSWORD_AUTH, ALLOW_REFRESH_TOKEN_AUTH]
+      PreventUserExistenceErrors: ENABLED
+
+  AdminGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: Admins
+      Description: AMA Board organisation administrators
+      Precedence: 0
+      UserPoolId: !Ref UserPool
+
+  SeedAdminFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.13
+      Handler: index.handler
+      Role: !GetAtt SeedAdminRole.Arn
+      Timeout: 30
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+          def handler(event, context):
+              try:
+                  props = event['ResourceProperties']
+                  cognito = boto3.client('cognito-idp')
+                  if event['RequestType'] in ('Create', 'Update'):
+                      email = props['AdminEmail']
+                      try:
+                          cognito.admin_create_user(UserPoolId=props['UserPoolId'], Username=email, UserAttributes=[{'Name':'email','Value':email},{'Name':'email_verified','Value':'true'}], DesiredDeliveryMediums=['EMAIL'])
+                      except cognito.exceptions.UsernameExistsException:
+                          pass
+                      cognito.admin_add_user_to_group(UserPoolId=props['UserPoolId'], Username=email, GroupName='Admins')
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {'AdminEmail': props['AdminEmail']}, props['AdminEmail'])
+              except Exception as error:
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': str(error)})
+
+  SeedAdminRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement: [{ Effect: Allow, Principal: { Service: lambda.amazonaws.com }, Action: 'sts:AssumeRole' }]
+      ManagedPolicyArns: [arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole]
+      Policies:
+        - PolicyName: SeedCognitoAdmin
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [cognito-idp:AdminCreateUser, cognito-idp:AdminAddUserToGroup]
+                Resource: !GetAtt UserPool.Arn
+
+  SeedAdmin:
+    Type: Custom::SeedAdmin
+    DependsOn: AdminGroup
+    Properties:
+      ServiceToken: !GetAtt SeedAdminFunction.Arn
+      UserPoolId: !Ref UserPool
+      AdminEmail: !Ref AdminEmail
+
+  BoardTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub askboard-${Environment}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+      Tags:
+        - Key: Application
+          Value: Askboard
+        - Key: Environment
+          Value: !Ref Environment
+
+  ResolverFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub askboard-resolver-${Environment}
+      Runtime: python3.13
+      Handler: app.handler
+      CodeUri: ../backend/
+      MemorySize: 256
+      Timeout: 10
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref BoardTable
+          USER_POOL_ID: !Ref UserPool
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref BoardTable
+        - Statement:
+            - Effect: Allow
+              Action: [cognito-idp:AdminCreateUser, cognito-idp:AdminGetUser]
+              Resource: !GetAtt UserPool.Arn
+
+  AppSyncApi:
+    Type: AWS::AppSync::GraphQLApi
+    Properties:
+      Name: !Sub askboard-${Environment}
+      AuthenticationType: AMAZON_COGNITO_USER_POOLS
+      UserPoolConfig:
+        AwsRegion: !Ref AWS::Region
+        DefaultAction: ALLOW
+        UserPoolId: !Ref UserPool
+      AdditionalAuthenticationProviders:
+        - AuthenticationType: API_KEY
+      LogConfig:
+        CloudWatchLogsRoleArn: !GetAtt AppSyncLogsRole.Arn
+        FieldLogLevel: ERROR
+        ExcludeVerboseContent: true
+      XrayEnabled: true
+
+  AppSyncApiKey:
+    Type: AWS::AppSync::ApiKey
+    Properties:
+      ApiId: !GetAtt AppSyncApi.ApiId
+      Expires: !Ref ApiKeyExpiresEpoch
+
+  AppSyncLogsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: appsync.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: WriteAppSyncLogs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [logs:CreateLogGroup, logs:CreateLogStream, logs:PutLogEvents]
+                Resource: '*'
+
+  AppSyncLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: appsync.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: InvokeResolver
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !GetAtt ResolverFunction.Arn
+
+  AppSyncDataSource:
+    Type: AWS::AppSync::DataSource
+    Properties:
+      ApiId: !GetAtt AppSyncApi.ApiId
+      Name: AskboardResolver
+      Type: AWS_LAMBDA
+      LambdaConfig:
+        LambdaFunctionArn: !GetAtt ResolverFunction.Arn
+      ServiceRoleArn: !GetAtt AppSyncLambdaRole.Arn
+
+  AppSyncSchema:
+    Type: AWS::AppSync::GraphQLSchema
+    Properties:
+      ApiId: !GetAtt AppSyncApi.ApiId
+      Definition: |
+        enum BoardVisibility { PUBLIC UNLISTED }
+        enum PostingPolicy { ANYONE AUTHENTICATED MODERATORS CLOSED }
+        enum VotingMode { NONE LIKES UPVOTE UP_DOWN }
+        enum BoardRole { OWNER MODERATOR }
+        enum QuestionStatus { OPEN SELECTED ANSWERED ARCHIVED }
+        type Board @aws_cognito_user_pools @aws_api_key { id: ID!, boardId: ID!, title: String!, description: String, visibility: BoardVisibility!, postingPolicy: PostingPolicy!, votingMode: VotingMode!, commentsEnabled: Boolean!, visibleVoteTotals: Boolean!, anonymousPosting: Boolean!, categories: [String!]!, presentedQuestionId: ID, createdBy: ID!, createdAt: AWSDateTime!, updatedAt: AWSDateTime! }
+        type Question @aws_cognito_user_pools @aws_api_key { id: ID!, boardId: ID!, body: String!, authorDisplayName: String!, category: String!, status: QuestionStatus!, rank: String!, upvotes: Int!, downvotes: Int!, comments: [Comment!]!, createdAt: AWSDateTime!, updatedAt: AWSDateTime!, deleted: Boolean }
+        type Comment @aws_cognito_user_pools @aws_api_key { id: ID!, boardId: ID, questionId: ID!, body: String!, authorDisplayName: String!, createdAt: AWSDateTime!, hidden: Boolean }
+        type QuestionConnection @aws_cognito_user_pools @aws_api_key { items: [Question!]!, nextToken: String }
+        type BoardMember @aws_cognito_user_pools { boardId: ID!, userId: ID!, email: AWSEmail, role: BoardRole!, invitationStatus: String }
+        type BoardAccess @aws_cognito_user_pools { role: BoardRole, canEditBoard: Boolean!, canModerateQuestions: Boolean!, canModerateComments: Boolean!, canPresent: Boolean!, canDeleteBoard: Boolean! }
+        type ModerationEvent @aws_cognito_user_pools { id: ID!, boardId: ID!, actorId: ID!, action: String!, targetType: String!, targetId: ID!, createdAt: AWSDateTime! }
+        type OrganizationSettings @aws_cognito_user_pools { organizationName: String!, defaultVisibility: BoardVisibility!, defaultVotingMode: VotingMode!, membersCanCreateBoards: Boolean!, updatedAt: AWSDateTime }
+        type UserSettings @aws_cognito_user_pools { userId: ID!, defaultIdentity: String!, updatedAt: AWSDateTime }
+        input CreateBoardInput { title: String!, description: String, visibility: BoardVisibility, postingPolicy: PostingPolicy, votingMode: VotingMode, commentsEnabled: Boolean }
+        input UpdateBoardInput { id: ID!, title: String, description: String, visibility: BoardVisibility, postingPolicy: PostingPolicy, votingMode: VotingMode, commentsEnabled: Boolean, visibleVoteTotals: Boolean, anonymousPosting: Boolean, categories: [String!] }
+        input CreateQuestionInput { boardId: ID!, body: String!, category: String!, identifyAs: String }
+        input CastVoteInput { boardId: ID!, questionId: ID!, value: Int! }
+        input AddCommentInput { boardId: ID!, questionId: ID!, body: String! }
+        input UpdateQuestionInput { boardId: ID!, questionId: ID!, body: String, category: String, status: QuestionStatus }
+        input UpdateOrganizationSettingsInput { organizationName: String!, defaultVisibility: BoardVisibility!, defaultVotingMode: VotingMode!, membersCanCreateBoards: Boolean! }
+        input UpdateUserSettingsInput { defaultIdentity: String! }
+        type Query { getBoard(id: ID!): Board @aws_cognito_user_pools @aws_api_key, listBoards: [Board!]! @aws_cognito_user_pools, listQuestions(boardId: ID!, limit: Int): QuestionConnection! @aws_cognito_user_pools @aws_api_key, listBoardMembers(boardId: ID!): [BoardMember!]! @aws_cognito_user_pools, getMyBoardAccess(boardId: ID!): BoardAccess! @aws_cognito_user_pools, listModerationEvents(boardId: ID!, limit: Int): [ModerationEvent!]! @aws_cognito_user_pools, getOrganizationSettings: OrganizationSettings! @aws_cognito_user_pools, getMySettings: UserSettings! @aws_cognito_user_pools }
+        type Mutation { createBoard(input: CreateBoardInput!): Board! @aws_cognito_user_pools, updateBoard(input: UpdateBoardInput!): Board! @aws_cognito_user_pools, deleteBoard(id: ID!): Boolean! @aws_cognito_user_pools, createQuestion(input: CreateQuestionInput!): Question! @aws_cognito_user_pools @aws_api_key, castVote(input: CastVoteInput!): Question! @aws_cognito_user_pools @aws_api_key, addComment(input: AddCommentInput!): Comment! @aws_cognito_user_pools @aws_api_key, setCommentVisibility(boardId: ID!, questionId: ID!, commentId: ID!, hidden: Boolean!): Comment! @aws_cognito_user_pools, updateQuestion(input: UpdateQuestionInput!): Question! @aws_cognito_user_pools, deleteQuestion(boardId: ID!, questionId: ID!): Question! @aws_cognito_user_pools, reorderQuestions(boardId: ID!, questionIds: [ID!]!): [Question!]! @aws_cognito_user_pools, selectQuestion(boardId: ID!, questionId: ID): Board! @aws_cognito_user_pools, assignModerator(boardId: ID!, userId: ID!): BoardMember! @aws_cognito_user_pools, inviteUser(boardId: ID!, email: AWSEmail!): BoardMember! @aws_cognito_user_pools, removeBoardMember(boardId: ID!, userId: ID!): Boolean! @aws_cognito_user_pools, updateOrganizationSettings(input: UpdateOrganizationSettingsInput!): OrganizationSettings! @aws_cognito_user_pools, updateMySettings(input: UpdateUserSettingsInput!): UserSettings! @aws_cognito_user_pools }
+        type Subscription { questionChanged(boardId: ID!): Question @aws_subscribe(mutations: ["createQuestion", "castVote", "updateQuestion", "deleteQuestion"]) @aws_cognito_user_pools @aws_api_key, commentAdded(boardId: ID!): Comment @aws_subscribe(mutations: ["addComment"]) @aws_cognito_user_pools @aws_api_key, commentModerated(boardId: ID!): Comment @aws_subscribe(mutations: ["setCommentVisibility"]) @aws_cognito_user_pools @aws_api_key, presentationChanged(boardId: ID!): Board @aws_subscribe(mutations: ["selectQuestion"]) @aws_cognito_user_pools @aws_api_key, questionsReordered(boardId: ID!): [Question!] @aws_subscribe(mutations: ["reorderQuestions"]) @aws_cognito_user_pools @aws_api_key }
+        schema { query: Query, mutation: Mutation, subscription: Subscription }
+
+  GetBoardResolver: { Type: AWS::AppSync::Resolver, DependsOn: AppSyncSchema, Properties: { ApiId: !GetAtt AppSyncApi.ApiId, TypeName: Query, FieldName: getBoard, DataSourceName: !GetAtt AppSyncDataSource.Name, RequestMappingTemplate: '{"version":"2018-05-29","operation":"Invoke","payload":$util.toJson($context)}', ResponseMappingTemplate: '#if($context.error) $util.error($context.error.message, $context.error.type) #end $util.toJson($context.result)' } }
+  ListBoardsResolver: { Type: AWS::AppSync::Resolver, DependsOn: AppSyncSchema, Properties: { ApiId: !GetAtt AppSyncApi.ApiId, TypeName: Query, FieldName: listBoards, DataSourceName: !GetAtt AppSyncDataSource.Name, RequestMappingTemplate: '{"version":"2018-05-29","operation":"Invoke","payload":$util.toJson($context)}', ResponseMappingTemplate: '#if($context.error) $util.error($context.error.message, $context.error.type) #end $util.toJson($context.result)' } }
+  ListQuestionsResolver: { Type: AWS::AppSync::Resolver, DependsOn: AppSyncSchema, Properties: { ApiId: !GetAtt AppSyncApi.ApiId, TypeName: Query, FieldName: listQuestions, DataSourceName: !GetAtt AppSyncDataSource.Name, RequestMappingTemplate: '{"version":"2018-05-29","operation":"Invoke","payload":$util.toJson($context)}', ResponseMappingTemplate: '#if($context.error) $util.error($context.error.message, $context.error.type) #end $util.toJson($context.result)' } }
+  ListBoardMembersResolver: { Type: AWS::AppSync::Resolver, DependsOn: AppSyncSchema, Properties: { ApiId: !GetAtt AppSyncApi.ApiId, TypeName: Query, FieldName: listBoardMembers, DataSourceName: !GetAtt AppSyncDataSource.Name, RequestMappingTemplate: '{"version":"2018-05-29","operation":"Invoke","payload":$util.toJson($context)}', ResponseMappingTemplate: '#if($context.error) $util.error($context.error.message, $context.error.type) #end $util.toJson($context.result)' } }
+  GetMyBoardAccessResolver: { Type: AWS::AppSync::Resolver, DependsOn: AppSyncSchema, Properties: { ApiId: !GetAtt AppSyncApi.ApiId, TypeName: Query, FieldName: getMyBoardAccess, DataSourceName: !GetAtt AppSyncDataSource.Name, RequestMappingTemplate: '{"version":"2018-05-29","operation":"Invoke","payload":$util.toJson($context)}', ResponseMappingTemplate: '#if($context.error) $util.error($context.error.message, $context.error.type) #end $util.toJson($context.result)' } }
+  ListModerationEventsResolver: { Type: AWS::AppSync::Resolver, DependsOn: AppSyncSchema, Properties: { ApiId: !GetAtt AppSyncApi.ApiId, TypeName: Query, FieldName: listModerationEvents, DataSourceName: !GetAtt AppSyncDataSource.Name, RequestMappingTemplate: '{"version":"2018-05-29","operation":"Invoke","payload":$util.toJson($context)}', ResponseMappingTemplate: '#if($context.error) $util.error($context.error.message, $context.error.type) #end $util.toJson($context.result)' } }
+  CreateBoardResolver: { Type: AWS::AppSync::Resolver, DependsOn: AppSyncSchema, Properties: { ApiId: !GetAtt AppSyncApi.ApiId, TypeName: Mutation, FieldName: createBoard, DataSourceName: !GetAtt AppSyncDataSource.Name, RequestMappingTemplate: '{"version":"2018-05-29","operation":"Invoke","payload":$util.toJson($context)}', ResponseMappingTemplate: '#if($context.error) $util.error($context.error.message, $context.error.type) #end $util.toJson($context.result)' } }
+  UpdateBoardResolver: { Type: AWS::AppSync::Resolver, DependsOn: AppSyncSchema, Properties: { ApiId: !GetAtt AppSyncApi.ApiId, TypeName: Mutation, FieldName: updateBoard, DataSourceName: !GetAtt AppSyncDataSource.Name, RequestMappingTemplate: '{"version":"2018-05-29","operation":"Invoke","payload":$util.toJson($context)}', ResponseMappingTemplate: '#if($context.error) $util.error($context.error.message, $context.error.type) #end $util.toJson($context.result)' } }
+  DeleteBoardResolver: { Type: AWS::AppSync::Resolver, DependsOn: AppSyncSchema, Properties: { ApiId: !GetAtt AppSyncApi.ApiId, TypeName: Mutation, FieldName: deleteBoard, DataSourceName: !GetAtt AppSyncDataSource.Name, RequestMappingTemplate: '{"version":"2018-05-29","operation":"Invoke","payload":$util.toJson($context)}', ResponseMappingTemplate: '#if($context.error) $util.error($context.error.message, $context.error.type) #end $util.toJson($context.result)' } }
+  CreateQuestionResolver: { Type: AWS::AppSync::Resolver, DependsOn: AppSyncSchema, Properties: { ApiId: !GetAtt AppSyncApi.ApiId, TypeName: Mutation, FieldName: createQuestion, DataSourceName: !GetAtt AppSyncDataSource.Name, RequestMappingTemplate: '{"version":"2018-05-29","operation":"Invoke","payload":$util.toJson($context)}', ResponseMappingTemplate: '#if($context.error) $util.error($context.error.message, $context.error.type) #end $util.toJson($context.result)' } }
+  CastVoteResolver: { Type: AWS::AppSync::Resolver, DependsOn: AppSyncSchema, Properties: { ApiId: !GetAtt AppSyncApi.ApiId, TypeName: Mutation, FieldName: castVote, DataSourceName: !GetAtt AppSyncDataSource.Name, RequestMappingTemplate: '{"version":"2018-05-29","operation":"Invoke","payload":$util.toJson($context)}', ResponseMappingTemplate: '#if($context.error) $util.error($context.error.message, $context.error.type) #end $util.toJson($context.result)' } }
+  AddCommentResolver: { Type: AWS::AppSync::Resolver, DependsOn: AppSyncSchema, Properties: { ApiId: !GetAtt AppSyncApi.ApiId, TypeName: Mutation, FieldName: addComment, DataSourceName: !GetAtt AppSyncDataSource.Name, RequestMappingTemplate: '{"version":"2018-05-29","operation":"Invoke","payload":$util.toJson($context)}', ResponseMappingTemplate: '#if($context.error) $util.error($context.error.message, $context.error.type) #end $util.toJson($context.result)' } }
+  SetCommentVisibilityResolver: { Type: AWS::AppSync::Resolver, DependsOn: AppSyncSchema, Properties: { ApiId: !GetAtt AppSyncApi.ApiId, TypeName: Mutation, FieldName: setCommentVisibility, DataSourceName: !GetAtt AppSyncDataSource.Name, RequestMappingTemplate: '{"version":"2018-05-29","operation":"Invoke","payload":$util.toJson($context)}', ResponseMappingTemplate: '#if($context.error) $util.error($context.error.message, $context.error.type) #end $util.toJson($context.result)' } }
+  UpdateQuestionResolver: { Type: AWS::AppSync::Resolver, DependsOn: AppSyncSchema, Properties: { ApiId: !GetAtt AppSyncApi.ApiId, TypeName: Mutation, FieldName: updateQuestion, DataSourceName: !GetAtt AppSyncDataSource.Name, RequestMappingTemplate: '{"version":"2018-05-29","operation":"Invoke","payload":$util.toJson($context)}', ResponseMappingTemplate: '#if($context.error) $util.error($context.error.message, $context.error.type) #end $util.toJson($context.result)' } }
+  DeleteQuestionResolver: { Type: AWS::AppSync::Resolver, DependsOn: AppSyncSchema, Properties: { ApiId: !GetAtt AppSyncApi.ApiId, TypeName: Mutation, FieldName: deleteQuestion, DataSourceName: !GetAtt AppSyncDataSource.Name, RequestMappingTemplate: '{"version":"2018-05-29","operation":"Invoke","payload":$util.toJson($context)}', ResponseMappingTemplate: '#if($context.error) $util.error($context.error.message, $context.error.type) #end $util.toJson($context.result)' } }
+  ReorderQuestionsResolver: { Type: AWS::AppSync::Resolver, DependsOn: AppSyncSchema, Properties: { ApiId: !GetAtt AppSyncApi.ApiId, TypeName: Mutation, FieldName: reorderQuestions, DataSourceName: !GetAtt AppSyncDataSource.Name, RequestMappingTemplate: '{"version":"2018-05-29","operation":"Invoke","payload":$util.toJson($context)}', ResponseMappingTemplate: '#if($context.error) $util.error($context.error.message, $context.error.type) #end $util.toJson($context.result)' } }
+  SelectQuestionResolver: { Type: AWS::AppSync::Resolver, DependsOn: AppSyncSchema, Properties: { ApiId: !GetAtt AppSyncApi.ApiId, TypeName: Mutation, FieldName: selectQuestion, DataSourceName: !GetAtt AppSyncDataSource.Name, RequestMappingTemplate: '{"version":"2018-05-29","operation":"Invoke","payload":$util.toJson($context)}', ResponseMappingTemplate: '#if($context.error) $util.error($context.error.message, $context.error.type) #end $util.toJson($context.result)' } }
+  AssignModeratorResolver: { Type: AWS::AppSync::Resolver, DependsOn: AppSyncSchema, Properties: { ApiId: !GetAtt AppSyncApi.ApiId, TypeName: Mutation, FieldName: assignModerator, DataSourceName: !GetAtt AppSyncDataSource.Name, RequestMappingTemplate: '{"version":"2018-05-29","operation":"Invoke","payload":$util.toJson($context)}', ResponseMappingTemplate: '#if($context.error) $util.error($context.error.message, $context.error.type) #end $util.toJson($context.result)' } }
+  InviteUserResolver: { Type: AWS::AppSync::Resolver, DependsOn: AppSyncSchema, Properties: { ApiId: !GetAtt AppSyncApi.ApiId, TypeName: Mutation, FieldName: inviteUser, DataSourceName: !GetAtt AppSyncDataSource.Name, RequestMappingTemplate: '{"version":"2018-05-29","operation":"Invoke","payload":$util.toJson($context)}', ResponseMappingTemplate: '#if($context.error) $util.error($context.error.message, $context.error.type) #end $util.toJson($context.result)' } }
+  RemoveBoardMemberResolver: { Type: AWS::AppSync::Resolver, DependsOn: AppSyncSchema, Properties: { ApiId: !GetAtt AppSyncApi.ApiId, TypeName: Mutation, FieldName: removeBoardMember, DataSourceName: !GetAtt AppSyncDataSource.Name, RequestMappingTemplate: '{"version":"2018-05-29","operation":"Invoke","payload":$util.toJson($context)}', ResponseMappingTemplate: '#if($context.error) $util.error($context.error.message, $context.error.type) #end $util.toJson($context.result)' } }
+  GetOrganizationSettingsResolver: { Type: AWS::AppSync::Resolver, DependsOn: AppSyncSchema, Properties: { ApiId: !GetAtt AppSyncApi.ApiId, TypeName: Query, FieldName: getOrganizationSettings, DataSourceName: !GetAtt AppSyncDataSource.Name, RequestMappingTemplate: '{"version":"2018-05-29","operation":"Invoke","payload":$util.toJson($context)}', ResponseMappingTemplate: '#if($context.error) $util.error($context.error.message, $context.error.type) #end $util.toJson($context.result)' } }
+  UpdateOrganizationSettingsResolver: { Type: AWS::AppSync::Resolver, DependsOn: AppSyncSchema, Properties: { ApiId: !GetAtt AppSyncApi.ApiId, TypeName: Mutation, FieldName: updateOrganizationSettings, DataSourceName: !GetAtt AppSyncDataSource.Name, RequestMappingTemplate: '{"version":"2018-05-29","operation":"Invoke","payload":$util.toJson($context)}', ResponseMappingTemplate: '#if($context.error) $util.error($context.error.message, $context.error.type) #end $util.toJson($context.result)' } }
+  GetMySettingsResolver: { Type: AWS::AppSync::Resolver, DependsOn: AppSyncSchema, Properties: { ApiId: !GetAtt AppSyncApi.ApiId, TypeName: Query, FieldName: getMySettings, DataSourceName: !GetAtt AppSyncDataSource.Name, RequestMappingTemplate: '{"version":"2018-05-29","operation":"Invoke","payload":$util.toJson($context)}', ResponseMappingTemplate: '#if($context.error) $util.error($context.error.message, $context.error.type) #end $util.toJson($context.result)' } }
+  UpdateMySettingsResolver: { Type: AWS::AppSync::Resolver, DependsOn: AppSyncSchema, Properties: { ApiId: !GetAtt AppSyncApi.ApiId, TypeName: Mutation, FieldName: updateMySettings, DataSourceName: !GetAtt AppSyncDataSource.Name, RequestMappingTemplate: '{"version":"2018-05-29","operation":"Invoke","payload":$util.toJson($context)}', ResponseMappingTemplate: '#if($context.error) $util.error($context.error.message, $context.error.type) #end $util.toJson($context.result)' } }
+
+  WebBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub askboard-web-${Environment}-${AWS::AccountId}
+      PublicAccessBlockConfiguration: { BlockPublicAcls: true, BlockPublicPolicy: true, IgnorePublicAcls: true, RestrictPublicBuckets: true }
+      BucketEncryption: { ServerSideEncryptionConfiguration: [{ ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 } }] }
+
+  CloudFrontOac:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig: { Name: !Sub 'askboard-${Environment}', OriginAccessControlOriginType: s3, SigningBehavior: always, SigningProtocol: sigv4 }
+
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        HttpVersion: http2and3
+        DefaultRootObject: index.html
+        Aliases:
+          - !Ref DomainName
+        Origins:
+          - Id: web
+            DomainName: !GetAtt WebBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt CloudFrontOac.Id
+            S3OriginConfig: { OriginAccessIdentity: '' }
+        DefaultCacheBehavior:
+          TargetOriginId: web
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          AllowedMethods: [GET, HEAD, OPTIONS]
+          CachedMethods: [GET, HEAD, OPTIONS]
+          ForwardedValues: { QueryString: false, Cookies: { Forward: none } }
+        CustomErrorResponses:
+          - { ErrorCode: 403, ResponseCode: 200, ResponsePagePath: /index.html, ErrorCachingMinTTL: 0 }
+          - { ErrorCode: 404, ResponseCode: 200, ResponsePagePath: /index.html, ErrorCachingMinTTL: 0 }
+        ViewerCertificate:
+          AcmCertificateArn: !Ref CertificateArn
+          MinimumProtocolVersion: TLSv1.2_2021
+          SslSupportMethod: sni-only
+
+  WebBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref WebBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: cloudfront.amazonaws.com }
+            Action: s3:GetObject
+            Resource: !Sub '${WebBucket.Arn}/*'
+            Condition: { StringEquals: { 'AWS:SourceArn': !Sub 'arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${Distribution}' } }
+
+  DomainIPv4Record:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref DomainName
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt Distribution.DomainName
+        EvaluateTargetHealth: false
+        HostedZoneId: Z2FDTNDATAQYW2
+
+  DomainIPv6Record:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref DomainName
+      Type: AAAA
+      AliasTarget:
+        DNSName: !GetAtt Distribution.DomainName
+        EvaluateTargetHealth: false
+        HostedZoneId: Z2FDTNDATAQYW2
+
+  CostBudget:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget: { BudgetName: !Sub 'askboard-${Environment}', BudgetLimit: { Amount: !Ref MonthlyBudgetUsd, Unit: USD }, TimeUnit: MONTHLY, BudgetType: COST }
+
+Outputs:
+  AppSyncEndpoint: { Value: !GetAtt AppSyncApi.GraphQLUrl }
+  AppSyncApiId: { Value: !GetAtt AppSyncApi.ApiId }
+  AppSyncApiKey: { Value: !GetAtt AppSyncApiKey.ApiKey }
+  UserPoolId: { Value: !Ref UserPool }
+  UserPoolClientId: { Value: !Ref UserPoolClient }
+  WebBucketName: { Value: !Ref WebBucket }
+  DistributionId: { Value: !Ref Distribution }
+  CloudFrontUrl: { Value: !Sub 'https://${Distribution.DomainName}' }
+  ApplicationUrl: { Value: !Sub 'https://${DomainName}' }
+  AwsRegion: { Value: !Ref AWS::Region }
+  AdminEmail: { Value: !Ref AdminEmail }
