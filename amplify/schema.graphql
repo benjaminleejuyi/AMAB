@@ -6,6 +6,7 @@ enum QuestionStatus { OPEN SELECTED ANSWERED ARCHIVED }
 
 type Board @aws_cognito_user_pools @aws_api_key {
   id: ID!
+  boardId: ID!
   title: String!
   description: String
   visibility: BoardVisibility!
@@ -34,9 +35,10 @@ type Question @aws_cognito_user_pools @aws_api_key {
   comments: [Comment!]!
   createdAt: AWSDateTime!
   updatedAt: AWSDateTime!
+  deleted: Boolean
 }
 
-type Comment { id: ID!, questionId: ID!, body: String!, authorDisplayName: String!, createdAt: AWSDateTime! }
+type Comment { id: ID!, boardId: ID, questionId: ID!, body: String!, authorDisplayName: String!, createdAt: AWSDateTime! }
 type QuestionConnection { items: [Question!]!, nextToken: String }
 type BoardMember { boardId: ID!, userId: ID!, role: BoardRole! }
 type OrganizationSettings { organizationName: String!, defaultVisibility: BoardVisibility!, defaultVotingMode: VotingMode!, membersCanCreateBoards: Boolean!, updatedAt: AWSDateTime }
@@ -47,6 +49,7 @@ input CreateBoardInput { title: String!, description: String, visibility: BoardV
 input UpdateBoardInput { id: ID!, title: String, description: String, visibility: BoardVisibility, postingPolicy: PostingPolicy, votingMode: VotingMode, commentsEnabled: Boolean, visibleVoteTotals: Boolean, anonymousPosting: Boolean, categories: [String!] }
 input CastVoteInput { boardId: ID!, questionId: ID!, value: Int! }
 input AddCommentInput { boardId: ID!, questionId: ID!, body: String! }
+input UpdateQuestionInput { boardId: ID!, questionId: ID!, body: String, category: String, status: QuestionStatus }
 input UpdateOrganizationSettingsInput { organizationName: String!, defaultVisibility: BoardVisibility!, defaultVotingMode: VotingMode!, membersCanCreateBoards: Boolean! }
 input UpdateUserSettingsInput { defaultIdentity: String! }
 
@@ -57,6 +60,9 @@ type Mutation {
   createQuestion(input: CreateQuestionInput!): Question! @aws_cognito_user_pools @aws_api_key
   castVote(input: CastVoteInput!): Question! @aws_cognito_user_pools @aws_api_key
   addComment(input: AddCommentInput!): Comment! @aws_cognito_user_pools @aws_api_key
+  updateQuestion(input: UpdateQuestionInput!): Question! @aws_cognito_user_pools
+  deleteQuestion(boardId: ID!, questionId: ID!): Question! @aws_cognito_user_pools
+  reorderQuestions(boardId: ID!, questionIds: [ID!]!): [Question!]! @aws_cognito_user_pools
   selectQuestion(boardId: ID!, questionId: ID): Board! @aws_cognito_user_pools
   assignModerator(boardId: ID!, userId: ID!): BoardMember! @aws_cognito_user_pools
   inviteUser(boardId: ID!, email: AWSEmail!): BoardMember! @aws_cognito_user_pools
@@ -73,9 +79,10 @@ type Query {
 }
 
 type Subscription {
-  questionChanged(boardId: ID!): Question @aws_subscribe(mutations: ["createQuestion", "castVote"])
+  questionChanged(boardId: ID!): Question @aws_subscribe(mutations: ["createQuestion", "castVote", "updateQuestion", "deleteQuestion"])
   commentAdded(boardId: ID!): Comment @aws_subscribe(mutations: ["addComment"])
   presentationChanged(boardId: ID!): Board @aws_subscribe(mutations: ["selectQuestion"])
+  questionsReordered(boardId: ID!): [Question!]! @aws_subscribe(mutations: ["reorderQuestions"])
 }
 
 schema { query: Query, mutation: Mutation, subscription: Subscription }

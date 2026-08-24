@@ -30,6 +30,14 @@ DynamoDB stores boards and board settings, questions, comments, per-participant 
 
 Board administrators can configure board-specific question categories and delete non-demo boards from Board settings. Deleting a board also removes its questions, embedded comments, vote records, and membership records.
 
+The interactive demo at `/boards/demo` is deliberately isolated from AppSync and DynamoDB. Its questions, comments, votes, and presentation state are stored in browser `sessionStorage`, survive refreshes during that browser session, and can be cleared with **Reset demo**.
+
+### Live updates and question administration
+
+Real boards establish an authenticated AppSync WebSocket connection and subscribe to question, vote, comment, ordering, and presentation events. The client reports its connection state, reconnects with exponential backoff and jitter, detects stale heartbeats, refreshes Cognito credentials, and reloads authoritative board state after reconnecting so missed events are recovered.
+
+Signed-in board managers can edit question text and category, mark questions answered or archived, reopen them, delete questions and their vote records, and move questions into a manual order. These operations are authorized again in the Lambda resolver; displaying a control in the browser does not bypass backend role checks.
+
 ## Deploy to AWS
 
 The infrastructure is configured to serve Askboard at `ama.anyhowonly.com` through Route 53, an ACM certificate, and CloudFront. The `anyhowonly.com` public hosted zone must already exist in the AWS account; the deployment script discovers it automatically or accepts `HOSTED_ZONE_ID` explicitly.

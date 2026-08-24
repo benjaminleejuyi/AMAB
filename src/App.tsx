@@ -1,22 +1,27 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
-  ArrowDown, ArrowRight, ArrowUp, BarChart3, Check, ChevronDown, CircleHelp, Globe2,
+  Archive, ArrowDown, ArrowRight, ArrowUp, BarChart3, Check, CheckCircle2, ChevronDown, ChevronUp, CircleHelp, Globe2,
   LayoutGrid, LockKeyhole, LogOut, MessageCircle, Plus, Presentation, Search,
-  Send, Settings, Share2, ShieldCheck, Sparkles, Trash2, UserCog, X,
+  Pencil, Send, Settings, Share2, ShieldCheck, Sparkles, Trash2, UserCog, Wifi, WifiOff, X,
 } from 'lucide-react'
 import type { Question, QuestionCategory } from './types'
-import { commentOnQuestion, completeNewPassword, createBoard, deleteBoard, getBoard, getMySettings, getOrganizationSettings, getQuestions, inviteUser, listBoards, NewPasswordRequiredError, postQuestion, presentQuestion, readSession, saveBoard, saveMySettings, saveOrganizationSettings, signIn, signOut, voteQuestion, type AuthSession, type BoardSummary, type PersistedQuestion } from './auth'
+import { activeIdToken, commentOnQuestion, completeNewPassword, createBoard, deleteBoard, deleteQuestion, getBoard, getMySettings, getOrganizationSettings, getQuestions, inviteUser, listBoards, NewPasswordRequiredError, postQuestion, presentQuestion, readSession, reorderQuestions, saveBoard, saveMySettings, saveOrganizationSettings, signIn, signOut, subscribeToBoard, updateQuestion, voteQuestion, type AuthSession, type BoardSummary, type PersistedQuestion, type RealtimeStatus } from './auth'
+import { demoBoard, getDemoPseudonym, readDemoQuestions, resetDemoQuestions, writeDemoQuestions } from './demo'
 
-type SortMode = 'Top' | 'Newest' | 'Oldest'
+type SortMode = 'Manual' | 'Top' | 'Newest' | 'Oldest'
 
-function QuestionCard({ question, onVote, onPresent, onComment, votingMode = 'UP_DOWN', commentsEnabled = true, canPresent = false, visibleVoteTotals = true }: {
+const fromPersistedQuestion = (item: PersistedQuestion, index = 0): Question => ({ id: item.id, author: item.authorDisplayName, avatar: item.authorDisplayName.split(' ').map(word => word[0]).join('').slice(0, 2), body: item.body, category: item.category as QuestionCategory, status: item.status === 'SELECTED' ? 'Selected' : item.status === 'ANSWERED' ? 'Answered' : item.status === 'ARCHIVED' ? 'Archived' : 'Open', rank: item.rank, upvotes: item.upvotes, downvotes: item.downvotes, viewerVote: 0, comments: (item.comments || []).map(comment => ({ id: comment.id, author: comment.authorDisplayName, body: comment.body, time: new Date(comment.createdAt).toLocaleString() })), createdAt: Date.parse(item.createdAt) || index })
+
+function QuestionCard({ question, onVote, onPresent, onComment, onAdmin, votingMode = 'UP_DOWN', commentsEnabled = true, canPresent = false, canManage = false, visibleVoteTotals = true }: {
   question: Question
   onVote: (id: string, vote: -1 | 1) => void
   onPresent: (id: string) => void
   onComment: (id: string, body: string) => void
+  onAdmin: (id: string, action: 'edit' | 'answer' | 'archive' | 'delete' | 'up' | 'down') => void
   votingMode?: string
   commentsEnabled?: boolean
   canPresent?: boolean
+  canManage?: boolean
   visibleVoteTotals?: boolean
 }) {
   const [commentsOpen, setCommentsOpen] = useState(false)
@@ -34,6 +39,8 @@ function QuestionCard({ question, onVote, onPresent, onComment, votingMode = 'UP
       {question.status === 'Selected' && <div className="live-label"><span /> Live now</div>}
       <div className="card-topline">
         <span className={`category category-${question.category.toLowerCase()}`}>{question.category}</span>
+        {question.status === 'Answered' && <span className="question-status answered">Answered</span>}
+        {question.status === 'Archived' && <span className="question-status archived">Archived</span>}
       </div>
       <p className="question-copy">{question.body}</p>
       <div className="author-row">
@@ -58,6 +65,14 @@ function QuestionCard({ question, onVote, onPresent, onComment, votingMode = 'UP
           <Presentation size={17} /> Present
         </button>}
       </div>
+      {canManage && <div className="admin-question-actions" aria-label="Question administration">
+        <button onClick={() => onAdmin(question.id, 'edit')}><Pencil size={14} /> Edit</button>
+        <button onClick={() => onAdmin(question.id, 'answer')}><CheckCircle2 size={14} /> {question.status === 'Answered' ? 'Reopen' : 'Answered'}</button>
+        <button onClick={() => onAdmin(question.id, 'archive')}><Archive size={14} /> Archive</button>
+        <button aria-label="Move question up" onClick={() => onAdmin(question.id, 'up')}><ChevronUp size={14} /></button>
+        <button aria-label="Move question down" onClick={() => onAdmin(question.id, 'down')}><ChevronDown size={14} /></button>
+        <button className="destructive" onClick={() => onAdmin(question.id, 'delete')}><Trash2 size={14} /> Delete</button>
+      </div>}
 
       {commentsOpen && (
         <div className="comments">
@@ -78,6 +93,7 @@ function QuestionCard({ question, onVote, onPresent, onComment, votingMode = 'UP
 }
 
 function BoardPage({ boardId, navigate, session }: { boardId: string, navigate: (path: string) => void, session: AuthSession | null }) {
+  const isDemo = boardId === 'demo'
   const [questions, setQuestions] = useState<Question[]>([])
   const [boardTitle, setBoardTitle] = useState('Loading board…')
   const [boardDescription, setBoardDescription] = useState('')
@@ -96,29 +112,75 @@ function BoardPage({ boardId, navigate, session }: { boardId: string, navigate: 
   const [newCategory, setNewCategory] = useState<QuestionCategory>('General')
   const [presenting, setPresenting] = useState<Question | null>(null)
   const [shareNotice, setShareNotice] = useState(false)
+  const [realtimeStatus, setRealtimeStatus] = useState<RealtimeStatus>('disconnected')
   const initials = session?.email.slice(0, 2).toUpperCase() ?? 'GU'
-  const toQuestion = (item: PersistedQuestion, index = 0): Question => ({ id: item.id, author: item.authorDisplayName, avatar: item.authorDisplayName.split(' ').map(word => word[0]).join('').slice(0, 2), body: item.body, category: item.category as QuestionCategory, status: item.status === 'SELECTED' ? 'Selected' : item.status === 'ANSWERED' ? 'Answered' : 'Open', upvotes: item.upvotes, downvotes: item.downvotes, viewerVote: 0, comments: (item.comments || []).map(comment => ({ id: comment.id, author: comment.authorDisplayName, body: comment.body, time: new Date(comment.createdAt).toLocaleString() })), createdAt: Date.parse(item.createdAt) || index })
   useEffect(() => {
+    if (isDemo) {
+      const savedQuestions = readDemoQuestions()
+      Promise.resolve().then(() => { setBoardTitle(demoBoard.title); setBoardDescription(demoBoard.description); setBoardCategories(demoBoard.categories); setNewCategory(demoBoard.categories[0]); setQuestions(savedQuestions); setPresenting(savedQuestions.find(item => item.status === 'Selected') || null); setBoardError('') })
+      return
+    }
     const token = session?.idToken
-    Promise.all([getBoard(boardId, token), getQuestions(boardId, token)]).then(([board, items]) => { const available = board.categories?.length ? board.categories : ['General']; setBoardTitle(board.title); setBoardDescription(board.description || ''); setBoardCategories(available); setNewCategory(available[0]); setVotingMode(board.votingMode); setCommentsEnabled(board.commentsEnabled); setVisibleVoteTotals(board.visibleVoteTotals); setPostingPolicy(board.postingPolicy); setAnonymousPosting(board.anonymousPosting); setQuestions(items.map(toQuestion)); setBoardError('') }).catch(reason => setBoardError(reason instanceof Error ? reason.message : 'Could not load this board.'))
-  }, [boardId, session?.idToken])
+    Promise.all([getBoard(boardId, token), getQuestions(boardId, token)]).then(([board, items]) => { const available = board.categories?.length ? board.categories : ['General']; setBoardTitle(board.title); setBoardDescription(board.description || ''); setBoardCategories(available); setNewCategory(available[0]); setVotingMode(board.votingMode); setCommentsEnabled(board.commentsEnabled); setVisibleVoteTotals(board.visibleVoteTotals); setPostingPolicy(board.postingPolicy); setAnonymousPosting(board.anonymousPosting); setQuestions(items.map(fromPersistedQuestion)); setBoardError('') }).catch(reason => setBoardError(reason instanceof Error ? reason.message : 'Could not load this board.'))
+  }, [boardId, isDemo, session?.idToken])
+
+  useEffect(() => {
+    if (isDemo) return
+    const resync = async () => {
+      try {
+        const currentSession = readSession() || session
+        const token = currentSession ? await activeIdToken(currentSession) : undefined
+        const [board, items] = await Promise.all([getBoard(boardId, token), getQuestions(boardId, token)])
+        setQuestions(current => items.map(item => { const next = fromPersistedQuestion(item); const existing = current.find(question => question.id === next.id); return existing ? { ...next, viewerVote: existing.viewerVote } : next }))
+        setPresenting(board.presentedQuestionId ? items.map(fromPersistedQuestion).find(item => item.id === board.presentedQuestionId) || null : null)
+      } catch (reason) { setBoardError(reason instanceof Error ? reason.message : 'Could not resynchronize live updates.') }
+    }
+    return subscribeToBoard(boardId, async () => { const current = readSession(); return current || session ? activeIdToken(current || session!) : undefined }, {
+      status: setRealtimeStatus,
+      resync,
+      question: changed => setQuestions(current => {
+        if (changed.deleted) return current.filter(item => item.id !== changed.id)
+        const next = fromPersistedQuestion(changed)
+        const existing = current.find(item => item.id === next.id)
+        return existing ? current.map(item => item.id === next.id ? { ...next, viewerVote: item.viewerVote } : item) : [next, ...current]
+      }),
+      comment: comment => setQuestions(current => current.map(question => question.id === comment.questionId && !question.comments.some(item => item.id === comment.id) ? { ...question, comments: [...question.comments, { id: comment.id, author: comment.authorDisplayName, body: comment.body, time: new Date(comment.createdAt).toLocaleString() }] } : question)),
+      presentation: () => { void resync() },
+      reordered: reordered => { setQuestions(current => reordered.map(item => { const next = fromPersistedQuestion(item); const existing = current.find(question => question.id === next.id); return existing ? { ...next, viewerVote: existing.viewerVote } : next })); setSort('Manual') },
+    })
+  }, [boardId, isDemo, session])
 
   const visibleQuestions = useMemo(() => questions
     .filter(item => category === 'All' || item.category === category)
     .filter(item => item.body.toLowerCase().includes(query.toLowerCase()))
-    .sort((a, b) => sort === 'Top' ? (b.upvotes - b.downvotes) - (a.upvotes - a.downvotes) : sort === 'Newest' ? b.createdAt - a.createdAt : a.createdAt - b.createdAt),
+    .sort((a, b) => sort === 'Manual' ? (a.rank || '').localeCompare(b.rank || '') : sort === 'Top' ? (b.upvotes - b.downvotes) - (a.upvotes - a.downvotes) : sort === 'Newest' ? b.createdAt - a.createdAt : a.createdAt - b.createdAt),
   [questions, category, query, sort])
 
   const vote = async (id: string, nextVote: -1 | 1) => {
     const currentQuestion = questions.find(item => item.id === id)
     if (!currentQuestion) return
-    const voteValue = currentQuestion.viewerVote === nextVote ? 0 : nextVote
+    const voteValue: -1 | 0 | 1 = currentQuestion.viewerVote === nextVote ? 0 : nextVote
+    if (isDemo) {
+      setQuestions(current => {
+        const next = current.map(item => item.id === id ? { ...item, upvotes: item.upvotes - Number(item.viewerVote === 1) + Number(voteValue === 1), downvotes: item.downvotes - Number(item.viewerVote === -1) + Number(voteValue === -1), viewerVote: voteValue } : item)
+        writeDemoQuestions(next); return next
+      })
+      return
+    }
     try {
       const saved = await voteQuestion(boardId, id, voteValue, session?.idToken)
       setQuestions(current => current.map(item => item.id === id ? { ...item, upvotes: saved.upvotes, downvotes: saved.downvotes, viewerVote: voteValue } : item))
     } catch (reason) { setBoardError(reason instanceof Error ? reason.message : 'Could not save vote.') }
   }
   const addComment = async (id: string, body: string) => {
+    if (isDemo) {
+      const pseudonym = getDemoPseudonym()
+      setQuestions(current => {
+        const next = current.map(item => item.id === id ? { ...item, comments: [...item.comments, { id: crypto.randomUUID(), author: pseudonym, body, time: 'Just now' }] } : item)
+        writeDemoQuestions(next); return next
+      })
+      return
+    }
     try {
       const saved = await commentOnQuestion(boardId, id, body, session?.idToken)
       setQuestions(current => current.map(item => item.id === id ? { ...item, comments: [...item.comments, { id: saved.id, author: saved.authorDisplayName, body: saved.body, time: 'Just now' }] } : item))
@@ -127,23 +189,65 @@ function BoardPage({ boardId, navigate, session }: { boardId: string, navigate: 
 
   const submitQuestion = async () => {
     if (!newQuestion.trim()) return
+    if (isDemo) {
+      const pseudonym = getDemoPseudonym()
+      const question: Question = { id: crypto.randomUUID(), author: pseudonym, avatar: pseudonym.split(' ').map(word => word[0]).join(''), body: newQuestion.trim(), category: newCategory, status: 'Open', upvotes: 0, downvotes: 0, viewerVote: 0, comments: [], createdAt: Date.now() }
+      setQuestions(current => { const next = [question, ...current]; writeDemoQuestions(next); return next }); setNewQuestion(''); setComposerOpen(false)
+      return
+    }
     try {
       const saved = await postQuestion(boardId, newQuestion.trim(), newCategory, session?.idToken, anonymousPosting ? undefined : session?.email)
-      setQuestions(current => [toQuestion(saved), ...current]); setNewQuestion(''); setComposerOpen(false)
+      setQuestions(current => [fromPersistedQuestion(saved), ...current]); setNewQuestion(''); setComposerOpen(false)
     } catch (reason) { setBoardError(reason instanceof Error ? reason.message : 'Could not post question.'); setComposerOpen(false) }
   }
 
   const startPresentation = async (id: string) => {
     const selected = questions.find(item => item.id === id)
     if (!selected) return
+    if (isDemo) { setQuestions(current => { const next = current.map(item => ({ ...item, status: item.id === id ? 'Selected' as const : item.status === 'Selected' ? 'Open' as const : item.status })); writeDemoQuestions(next); return next }); setPresenting(selected); return }
     if (!session) { setBoardError('Sign in as a moderator to use presentation mode.'); return }
     try { await presentQuestion(boardId, id, session.idToken); setQuestions(current => current.map(item => ({ ...item, status: item.id === id ? 'Selected' : item.status === 'Selected' ? 'Open' : item.status }))); setPresenting(selected) }
     catch (reason) { setBoardError(reason instanceof Error ? reason.message : 'Could not select the question.') }
   }
   const endPresentation = async () => {
+    if (isDemo) { setQuestions(current => { const next = current.map(item => ({ ...item, status: item.status === 'Selected' ? 'Open' as const : item.status })); writeDemoQuestions(next); return next }); setPresenting(null); return }
     if (!session) return
     try { await presentQuestion(boardId, null, session.idToken); setQuestions(current => current.map(item => ({ ...item, status: item.status === 'Selected' ? 'Open' : item.status }))); setPresenting(null) }
     catch (reason) { setBoardError(reason instanceof Error ? reason.message : 'Could not end presentation mode.') }
+  }
+
+  const administerQuestion = async (id: string, action: 'edit' | 'answer' | 'archive' | 'delete' | 'up' | 'down') => {
+    if (!session || isDemo) return
+    const question = questions.find(item => item.id === id)
+    if (!question) return
+    try {
+      if (action === 'delete') {
+        if (!window.confirm('Delete this question and all of its comments and votes?')) return
+        await deleteQuestion(boardId, id, session.idToken)
+        setQuestions(current => current.filter(item => item.id !== id))
+      } else if (action === 'edit') {
+        const body = window.prompt('Edit question', question.body)?.trim()
+        if (!body) return
+        const categoryName = window.prompt(`Category (${boardCategories.join(', ')})`, question.category)?.trim()
+        if (!categoryName || !boardCategories.includes(categoryName)) { setBoardError('Choose one of the configured board categories.'); return }
+        const saved = await updateQuestion({ boardId, questionId: id, body, category: categoryName }, session.idToken)
+        setQuestions(current => current.map(item => item.id === id ? { ...fromPersistedQuestion(saved), viewerVote: item.viewerVote } : item))
+      } else if (action === 'answer' || action === 'archive') {
+        const status = action === 'archive' ? 'ARCHIVED' : question.status === 'Answered' ? 'OPEN' : 'ANSWERED'
+        const saved = await updateQuestion({ boardId, questionId: id, status }, session.idToken)
+        setQuestions(current => current.map(item => item.id === id ? { ...fromPersistedQuestion(saved), viewerVote: item.viewerVote } : item))
+      } else {
+        const currentIndex = questions.findIndex(item => item.id === id)
+        const targetIndex = action === 'up' ? currentIndex - 1 : currentIndex + 1
+        if (targetIndex < 0 || targetIndex >= questions.length) return
+        const reordered = [...questions]
+        ;[reordered[currentIndex], reordered[targetIndex]] = [reordered[targetIndex], reordered[currentIndex]]
+        const saved = await reorderQuestions(boardId, reordered.map(item => item.id), session.idToken)
+        setQuestions(saved.map(item => { const next = fromPersistedQuestion(item); const existing = questions.find(questionItem => questionItem.id === next.id); return existing ? { ...next, viewerVote: existing.viewerVote } : next }))
+        setSort('Manual')
+      }
+      setBoardError('')
+    } catch (reason) { setBoardError(reason instanceof Error ? reason.message : 'Could not administer this question.') }
   }
 
   const shareBoard = async () => {
@@ -157,22 +261,24 @@ function BoardPage({ boardId, navigate, session }: { boardId: string, navigate: 
     window.setTimeout(() => setShareNotice(false), 2200)
   }
   const canPost = (anonymousPosting || !!session) && (postingPolicy === 'ANYONE' || (postingPolicy === 'AUTHENTICATED' && !!session) || (postingPolicy === 'MODERATORS' && !!session))
+  const resetDemo = () => { setQuestions(resetDemoQuestions()); setPresenting(null); setCategory('All'); setQuery('') }
 
   return (
     <div className="app-shell">
       <header>
         <button className="brand brand-button" onClick={() => navigate('/')}><span><Sparkles size={20} /></span> AMA Board</button>
         <nav aria-label="Main navigation"><button className="active"><LayoutGrid size={17} /> Board</button><button onClick={() => navigate('/about')}><CircleHelp size={17} /> About</button></nav>
-        <div className="header-actions"><button className="share" onClick={shareBoard}><Share2 size={16} /> Share</button>{session && <button className="settings" onClick={() => navigate(`/boards/${boardId}/settings`)} aria-label="Board settings"><Settings size={18} /></button>}<button className="profile profile-button" title={session?.email ?? 'Guest'} onClick={() => navigate(session ? '/admin' : '/')}>{initials}</button></div>
+        <div className="header-actions"><button className="share" onClick={shareBoard}><Share2 size={16} /> Share</button>{session && !isDemo && <button className="settings" onClick={() => navigate(`/boards/${boardId}/settings`)} aria-label="Board settings"><Settings size={18} /></button>}<button className="profile profile-button" title={session?.email ?? 'Guest'} onClick={() => navigate(session ? '/admin' : '/')}>{initials}</button></div>
       </header>
 
       <main>
+        {isDemo && <div className="demo-notice" role="status"><span><b>Interactive demo</b> — changes are temporary and stay in this browser session.</span><button onClick={resetDemo}>Reset demo</button></div>}
         {boardError && <div className="page-error" role="alert">{boardError}</div>}
         <section className="hero">
           <div className="eyebrow"><span className="pulse" /> AMA BOARD</div>
           <div className="hero-heading">
             <div><h1>{boardTitle}</h1>{boardDescription && <p>{boardDescription}</p>}</div>
-            <button className="ask-button" disabled={!canPost} onClick={() => setComposerOpen(true)}><Plus size={20} /> {postingPolicy === 'CLOSED' ? 'Questions closed' : 'Ask a question'}</button>
+            <button className={`ask-button ${postingPolicy === 'CLOSED' ? 'closed' : ''}`} disabled={!canPost} onClick={() => setComposerOpen(true)}>{postingPolicy === 'CLOSED' ? <LockKeyhole size={19} /> : <Plus size={20} />} {postingPolicy === 'CLOSED' ? 'Questions closed' : 'Ask a question'}</button>
           </div>
         </section>
 
@@ -180,13 +286,13 @@ function BoardPage({ boardId, navigate, session }: { boardId: string, navigate: 
           <div className="category-tabs">{['All', ...boardCategories].map(item => <button key={item} className={category === item ? 'active' : ''} onClick={() => setCategory(item)}>{item}</button>)}</div>
           <div className="tools">
             <label className="search"><Search size={17} /><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search questions" /></label>
-            <label className="sort">Sort: <select value={sort} onChange={event => setSort(event.target.value as SortMode)}><option>Top</option><option>Newest</option><option>Oldest</option></select><ChevronDown size={15} /></label>
+            <label className="sort">Sort: <select value={sort} onChange={event => setSort(event.target.value as SortMode)}>{session && !isDemo && <option>Manual</option>}<option>Top</option><option>Newest</option><option>Oldest</option></select><ChevronDown size={15} /></label>
           </div>
         </section>
 
-        <section className="content-heading"><div><h2>Questions</h2><span>{visibleQuestions.length} of {questions.length}</span></div></section>
+        <section className="content-heading"><div><h2>Questions</h2><span>{visibleQuestions.length} of {questions.length}</span></div>{!isDemo && <span className={`realtime-status ${realtimeStatus}`} title="AppSync live connection">{realtimeStatus === 'connected' ? <Wifi size={15} /> : <WifiOff size={15} />} {realtimeStatus === 'connected' ? 'Live' : realtimeStatus === 'reconnecting' ? 'Reconnecting…' : realtimeStatus === 'connecting' ? 'Connecting…' : 'Offline'}</span>}</section>
         <section className="question-list">
-          {visibleQuestions.map(question => <QuestionCard key={question.id} question={question} onVote={vote} onPresent={startPresentation} onComment={addComment} votingMode={votingMode} commentsEnabled={commentsEnabled} visibleVoteTotals={visibleVoteTotals} canPresent={!!session} />)}
+          {visibleQuestions.map(question => <QuestionCard key={question.id} question={question} onVote={vote} onPresent={startPresentation} onComment={addComment} onAdmin={administerQuestion} votingMode={votingMode} commentsEnabled={commentsEnabled} visibleVoteTotals={visibleVoteTotals} canPresent={isDemo || !!session} canManage={!!session && !isDemo} />)}
           {visibleQuestions.length === 0 && <div className="empty"><Search size={28} /><h3>No questions found</h3><p>Try a different search or category.</p></div>}
         </section>
       </main>
@@ -217,7 +323,7 @@ function AccountMenu({ session, navigate, onSignOut }: { session: AuthSession, n
 function PublicHeader({ navigate, onLogin, session, onSignOut }: { navigate: (path: string) => void, onLogin: () => void, session: AuthSession | null, onSignOut: () => void }) {
   return <header className="public-header">
     <button className="brand brand-button" onClick={() => navigate('/')}><span><Sparkles size={20} /></span> AMA Board</button>
-    <nav aria-label="Main navigation"><button onClick={() => navigate('/about')}>About</button><button onClick={() => navigate('/boards/all-company')}>View demo</button></nav>
+    <nav aria-label="Main navigation"><button onClick={() => navigate('/about')}>About</button><button onClick={() => navigate('/boards/demo')}>View demo</button></nav>
     {session ? <AccountMenu session={session} navigate={navigate} onSignOut={onSignOut} /> : <button className="login-button" onClick={onLogin}>Log in <ArrowRight size={16} /></button>}
   </header>
 }
@@ -262,7 +368,7 @@ function LandingPage({ navigate, onSignedIn, session, onSignOut }: { navigate: (
         <div className="landing-copy"><div className="marketing-eyebrow"><Sparkles size={14} /> Better conversations, together</div>
           <h1>Give every question<br /><em>a place to be heard.</em></h1>
           <p>Run focused AMAs where people ask freely, vote together, and leaders answer what matters most.</p>
-          <div className="landing-actions"><button onClick={() => session ? navigate('/admin') : setLoginOpen(true)}>Create your board <ArrowRight size={18} /></button><button onClick={() => navigate('/boards/all-company')}>Explore the demo</button></div>
+          <div className="landing-actions"><button onClick={() => navigate('/boards/demo')}>Explore the interactive demo <ArrowRight size={18} /></button></div>
           <div className="trust-line"><span><Check size={14} /> Anonymous by choice</span><span><Check size={14} /> Live voting</span><span><Check size={14} /> Presentation ready</span></div>
         </div>
         <div className="hero-visual" aria-label="AMA Board product preview">
@@ -284,7 +390,7 @@ function AboutPage({ navigate, onSignedIn, session, onSignOut }: { navigate: (pa
   return <div className="marketing-shell"><PublicHeader navigate={navigate} onLogin={() => setLoginOpen(true)} session={session} onSignOut={onSignOut} />
     <main className="simple-page"><div className="marketing-eyebrow">About AMA Board</div><h1>Honest questions make<br />stronger organisations.</h1><p className="page-lead">AMA Board creates an open, organised space for every voice—before, during, and after your AMA.</p>
       <section className="values-grid"><article><Globe2 /><h2>Open by default</h2><p>Public and unlisted boards make it effortless to join while administrators stay in control.</p></article><article><ShieldCheck /><h2>Safe to speak</h2><p>Participants can identify themselves or use a consistent, friendly pseudonym.</p></article><article><Presentation /><h2>Built for the room</h2><p>Present the selected question clearly without losing the live audience conversation.</p></article></section>
-      <button className="page-cta" onClick={() => navigate('/boards/all-company')}>See AMA Board in action <ArrowRight size={18} /></button>
+      <button className="page-cta" onClick={() => navigate('/boards/demo')}>See AMA Board in action <ArrowRight size={18} /></button>
     </main>{loginOpen && <LoginDialog onClose={() => setLoginOpen(false)} onSignedIn={onSignedIn} />}</div>
 }
 
@@ -327,7 +433,7 @@ function SettingsPage({ boardId, navigate, session }: { boardId: string, navigat
   return <div className="settings-shell"><header><button className="brand brand-button" onClick={() => navigate('/')}><span><Sparkles size={20} /></span> AMA Board</button><button className="back-board" onClick={() => navigate(`/boards/${boardId}`)}>← Back to board</button><button className="profile profile-button" title={session.email} onClick={() => navigate('/admin')}>{session.email.slice(0, 2).toUpperCase()}</button></header>
     <main className="settings-page"><div className="settings-title"><div><span>Board administration</span><h1>Board settings</h1><p>Control how people find and participate in this AMA.</p>{settingsStatus && <p role="status">{settingsStatus}</p>}</div><button onClick={persistBoard}>{saved ? <><Check size={17} /> Saved</> : 'Save changes'}</button></div>
       <section className="settings-grid"><aside>{(['General', 'Participation', 'Categories', 'Moderators', 'Presentation'] as const).map(tab => <button key={tab} className={activeTab === tab ? 'active' : ''} onClick={() => setActiveTab(tab)}>{tab}</button>)}</aside><div className="settings-panels">
-        {activeTab === 'General' && <article><h2>Board details</h2><p>The information participants see at the top of this board.</p><label>Board title<input value={title} onChange={event => setTitle(event.target.value)} /></label><label>Description<textarea value={description} onChange={event => setDescription(event.target.value)} /></label><label>Board URL<input value={`/boards/${boardId}`} readOnly /></label>{boardId !== 'all-company' && <><hr /><h2>Danger zone</h2><p>Deleting a board permanently removes its questions, comments, and votes.</p><button className="danger-button" onClick={removeBoard}><Trash2 size={16} /> Delete board</button>{deleteStatus && <p role="status">{deleteStatus}</p>}</>}</article>}
+        {activeTab === 'General' && <article><h2>Board details</h2><p>The information participants see at the top of this board.</p><label>Board title<input value={title} onChange={event => setTitle(event.target.value)} /></label><label>Description<textarea value={description} onChange={event => setDescription(event.target.value)} /></label><label>Board URL<input value={`/boards/${boardId}`} readOnly /></label><hr /><h2>Danger zone</h2><p>Deleting a board permanently removes its questions, comments, and votes.</p><button className="danger-button" onClick={removeBoard}><Trash2 size={16} /> Delete board</button>{deleteStatus && <p role="status">{deleteStatus}</p>}</article>}
         {activeTab === 'Participation' && <article><h2>Access and participation</h2><p>Choose how your organisation can take part.</p><label>Board visibility<select value={visibility} onChange={event => setVisibility(event.target.value)}><option value="PUBLIC">Public</option><option value="UNLISTED">Unlisted — link only</option></select></label><label>Who can post<select value={postingPolicy} onChange={event => setPostingPolicy(event.target.value)}><option value="ANYONE">Anyone</option><option value="AUTHENTICATED">Signed-in users</option><option value="MODERATORS">Moderators only</option><option value="CLOSED">Closed</option></select></label><label>Voting mode<select value={votingMode} onChange={event => setVotingMode(event.target.value)}><option value="UP_DOWN">Upvotes and downvotes</option><option value="UPVOTE">Upvotes only</option><option value="NONE">No voting</option></select></label><div className="setting-row"><div><b>Allow comments</b><span>Participants can comment without pre-moderation.</span></div><button className={`switch ${comments ? 'on' : ''}`} onClick={() => setComments(!comments)} aria-label="Allow comments"><i /></button></div><div className="setting-row"><div><b>Allow pseudonyms</b><span>Assign a friendly identity when no name is provided.</span></div><button className={`switch ${anonymous ? 'on' : ''}`} onClick={() => setAnonymous(!anonymous)} aria-label="Allow pseudonyms"><i /></button></div></article>}
         {activeTab === 'Categories' && <article><h2>Question categories</h2><p>Categories appear as filters on this board and in the question composer.</p>{boardCategories.map(item => <div className="member-row" key={item}><div><b>{item}</b></div><button disabled={boardCategories.length === 1} onClick={() => setBoardCategories(current => current.filter(categoryName => categoryName !== item))}>Remove</button></div>)}<div className="invite-row"><input value={newCategory} onChange={event => setNewCategory(event.target.value)} placeholder="New category" /><button disabled={!newCategory.trim() || boardCategories.some(item => item.toLowerCase() === newCategory.trim().toLowerCase())} onClick={() => { setBoardCategories(current => [...current, newCategory.trim()]); setNewCategory('') }}>Add category</button></div><p>Use “Save changes” after editing categories.</p></article>}
         {activeTab === 'Moderators' && <article><h2>Board moderators</h2><p>Invite colleagues who can organise questions and control presentation mode.</p><div className="member-row"><span className="profile">{session.email.slice(0, 2).toUpperCase()}</span><div><b>{session.email}</b><small>Organisation administrator</small></div><strong>Admin</strong></div><div className="invite-row"><input type="email" value={inviteEmail} onChange={event => setInviteEmail(event.target.value)} placeholder="colleague@company.com" /><button disabled={!inviteEmail} onClick={sendInvite}>Send invitation</button></div>{inviteStatus && <p role="status">{inviteStatus}</p>}</article>}
@@ -370,8 +476,10 @@ function AdminPage({ navigate, session, onSignOut }: { navigate: (path: string) 
     getOrganizationSettings(session.idToken).then(settings => { setOrganizationName(String(settings.organizationName)); setDefaultVisibility(String(settings.defaultVisibility)); setDefaultVotingMode(String(settings.defaultVotingMode)); setMembersCanCreateBoards(Boolean(settings.membersCanCreateBoards)) }).catch(reason => setOrganizationStatus(reason instanceof Error ? reason.message : 'Could not load organisation settings.'))
   }, [session.idToken])
   const addUser = async () => {
+    const boardId = boards[0]?.id
+    if (!boardId) { setStatus('Create a board before inviting its first moderator.'); return }
     setStatus('Sending…')
-    try { await inviteUser('all-company', email, session.idToken); setStatus(`Invitation sent to ${email}`); setEmail('') }
+    try { await inviteUser(boardId, email, session.idToken); setStatus(`Invitation sent to ${email}`); setEmail('') }
     catch (reason) { setStatus(reason instanceof Error ? reason.message : 'Could not invite user.') }
   }
   const addBoard = async () => {
@@ -416,6 +524,7 @@ export function App() {
   const isAdmin = session?.groups.includes('Admins') ?? false
   const settingsMatch = path.match(/^\/boards\/([^/]+)\/settings\/?$/)
   const boardMatch = path.match(/^\/boards\/([^/]+)\/?$/)
+  if (settingsMatch?.[1] === 'demo') return <BoardPage boardId="demo" navigate={navigate} session={session} />
   if (settingsMatch && session) return <SettingsPage boardId={settingsMatch[1]} navigate={navigate} session={session} />
   if (settingsMatch) return <LandingPage navigate={navigate} onSignedIn={signedIn} session={session} onSignOut={signedOut} />
   if (boardMatch) return <BoardPage boardId={boardMatch[1]} navigate={navigate} session={session} />

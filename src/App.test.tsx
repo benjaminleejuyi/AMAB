@@ -13,6 +13,7 @@ describe('AMA board', () => {
       const data = query.includes('query Board') ? { getBoard: { id: 'all-company', title: 'Ask the leadership team', description: 'Demo', visibility: 'PUBLIC', postingPolicy: 'ANYONE', votingMode: 'UP_DOWN', commentsEnabled: true, visibleVoteTotals: true, anonymousPosting: true, categories: ['Strategy', 'Product'] } }
         : query.includes('query Questions') ? { listQuestions: { items: [question] } }
           : query.includes('mutation Post') ? { createQuestion: { ...question, id: 'new-question', body: JSON.parse(String(options.body)).variables.input.body } }
+            : query.includes('mutation UpdateQuestion') ? { updateQuestion: { ...question, body: JSON.parse(String(options.body)).variables.input.body, rank: new Date().toISOString() } }
             : query.includes('mutation Present') ? { selectQuestion: { id: 'all-company', presentedQuestionId: 'q1' } }
               : query.includes('query ListBoards') ? { listBoards: [] }
                 : query.includes('query Org') ? { getOrganizationSettings: { organizationName: 'Anyhow Only', defaultVisibility: 'UNLISTED', defaultVotingMode: 'UP_DOWN', membersCanCreateBoards: false } }
@@ -33,24 +34,26 @@ describe('AMA board', () => {
     expect(screen.getByRole('button', { name: /log in/i })).toBeInTheDocument()
   })
 
-  it('posts a new pseudonymous question', async () => {
-    window.history.replaceState({}, '', '/boards/all-company')
+  it('keeps demo questions in the browser session without calling AppSync', async () => {
+    window.history.replaceState({}, '', '/boards/demo')
     render(<App />)
-    await screen.findByText('What should we focus on?')
+    await screen.findByText(/most important outcomes/i)
+    vi.mocked(fetch).mockClear()
     fireEvent.click(screen.getByRole('button', { name: /ask a question/i }))
     fireEvent.change(screen.getByPlaceholderText('What would you like to ask?'), { target: { value: 'Can we have a volunteering day?' } })
     fireEvent.click(screen.getByRole('button', { name: /post question/i }))
-    await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([, options]) => {
-      const request = JSON.parse(String(options?.body))
-      return request.query.includes('mutation Post') && request.variables.input.body === 'Can we have a volunteering day?'
-    })).toBe(true))
+    expect(await screen.findByText('Can we have a volunteering day?')).toBeInTheDocument()
+    expect(sessionStorage.getItem('ama-board-demo-v2')).toContain('Can we have a volunteering day?')
+    expect(sessionStorage.getItem('ama-board-demo-pseudonym-v1')).toMatch(/^[A-Z][a-z]+ [A-Z][a-z]+$/)
+    expect(sessionStorage.getItem('ama-board-demo-v2')).not.toContain('Guest ')
+    expect(fetch).not.toHaveBeenCalled()
   })
 
   it('opens presentation mode for a question', async () => {
-    window.history.replaceState({}, '', '/boards/all-company')
+    window.history.replaceState({}, '', '/boards/demo')
     sessionStorage.setItem('ama-board-session', JSON.stringify({ accessToken: 'access', idToken, email: 'admin@example.com', groups: ['Admins'] }))
     render(<App />)
-    fireEvent.click(await screen.findByRole('button', { name: /^present$/i }))
+    fireEvent.click((await screen.findAllByRole('button', { name: /^present$/i }))[0])
     expect(await screen.findByRole('dialog', { name: 'Presentation mode' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /end presentation/i })).toBeInTheDocument()
   })
@@ -67,16 +70,27 @@ describe('AMA board', () => {
   })
 
   it('opens settings for an authenticated administrator', () => {
-    window.history.replaceState({}, '', '/boards/all-company')
+    window.history.replaceState({}, '', '/boards/real-board')
     sessionStorage.setItem('ama-board-session', JSON.stringify({ accessToken: 'access', idToken, email: 'admin@example.com', groups: ['Admins'] }))
     render(<App />)
     fireEvent.click(screen.getByRole('button', { name: /board settings/i }))
     expect(screen.getByRole('heading', { name: /board settings/i })).toBeInTheDocument()
-    expect(window.location.pathname).toBe('/boards/all-company/settings')
+    expect(window.location.pathname).toBe('/boards/real-board/settings')
     fireEvent.click(screen.getByRole('button', { name: 'Participation' }))
     expect(screen.getByRole('heading', { name: /access and participation/i })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Moderators' }))
     expect(screen.getByRole('heading', { name: /board moderators/i })).toBeInTheDocument()
+  })
+
+  it('allows an administrator to edit a persisted question', async () => {
+    window.history.replaceState({}, '', '/boards/real-board')
+    sessionStorage.setItem('ama-board-session', JSON.stringify({ accessToken: 'access', idToken, email: 'admin@example.com', groups: ['Admins'] }))
+    vi.spyOn(window, 'prompt').mockReturnValueOnce('What is the updated priority?').mockReturnValueOnce('Strategy')
+    render(<App />)
+    await screen.findByText('What should we focus on?')
+    fireEvent.click(screen.getByRole('button', { name: /^edit$/i }))
+    expect(await screen.findByText('What is the updated priority?')).toBeInTheDocument()
+    expect(vi.mocked(fetch).mock.calls.some(([, options]) => String(options?.body).includes('mutation UpdateQuestion'))).toBe(true)
   })
 
   it('shows the signed-in account and site administration', () => {
@@ -89,11 +103,11 @@ describe('AMA board', () => {
     expect(screen.getByRole('heading', { name: /welcome, admin@example.com/i })).toBeInTheDocument()
   })
 
-  it('takes a signed-in administrator to board creation without another login', () => {
+  it('opens the browser-only demo without another login', () => {
     sessionStorage.setItem('ama-board-session', JSON.stringify({ accessToken: 'access', idToken, email: 'admin@example.com', groups: ['Admins'] }))
     render(<App />)
-    fireEvent.click(screen.getByRole('button', { name: /create your board/i }))
-    expect(window.location.pathname).toBe('/admin')
+    fireEvent.click(screen.getByRole('button', { name: /explore the interactive demo/i }))
+    expect(window.location.pathname).toBe('/boards/demo')
     expect(screen.queryByRole('dialog', { name: /welcome back/i })).not.toBeInTheDocument()
   })
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import time
 import uuid
+import hashlib
 from decimal import Decimal
 
 import boto3
@@ -14,9 +15,26 @@ TABLE_NAME = os.environ["TABLE_NAME"]
 USER_POOL_ID = os.environ["USER_POOL_ID"]
 table = boto3.resource("dynamodb").Table(TABLE_NAME)
 
+PSEUDONYM_ADJECTIVES = (
+    "Brave", "Bright", "Calm", "Clever", "Curious", "Friendly", "Gentle", "Helpful",
+    "Honest", "Jolly", "Kind", "Lively", "Patient", "Quiet", "Thoughtful", "Wise",
+)
+PSEUDONYM_ANIMALS = (
+    "Badger", "Dolphin", "Falcon", "Fox", "Heron", "Koala", "Otter", "Owl",
+    "Panda", "Penguin", "Rabbit", "Robin", "Seal", "Tiger", "Turtle", "Wombat",
+)
+
 
 def _now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _pseudonym(participant_id: str) -> str:
+    """Return a stable, friendly pseudonym without exposing the participant ID."""
+    digest = hashlib.sha256(participant_id.encode("utf-8")).digest()
+    adjective = PSEUDONYM_ADJECTIVES[int.from_bytes(digest[:2], "big") % len(PSEUDONYM_ADJECTIVES)]
+    animal = PSEUDONYM_ANIMALS[int.from_bytes(digest[2:4], "big") % len(PSEUDONYM_ANIMALS)]
+    return f"{adjective} {animal}"
 
 
 def _identity(event: dict) -> tuple[str, bool]:
@@ -36,11 +54,10 @@ def _public(item: dict) -> dict:
 
 def _get_board(board_id: str) -> dict:
     result = table.get_item(Key={"PK": f"BOARD#{board_id}", "SK": "META"}).get("Item")
-    if not result and board_id == "all-company":
-        now = _now()
-        result = {"PK": "BOARD#all-company", "SK": "META", "entity": "BOARD", "id": "all-company", "title": "Ask the leadership team", "description": "Submit and vote on questions for the leadership team.", "visibility": "PUBLIC", "postingPolicy": "ANYONE", "votingMode": "UP_DOWN", "commentsEnabled": True, "visibleVoteTotals": True, "anonymousPosting": True, "categories": ["Strategy", "Product", "Culture", "People"], "presentedQuestionId": None, "createdBy": "SYSTEM", "createdAt": now, "updatedAt": now}
-        table.put_item(Item=result)
-    elif result and not result.get("categories"):
+    if result and not result.get("boardId"):
+        result["boardId"] = result["id"]
+        table.update_item(Key={"PK": result["PK"], "SK": result["SK"]}, UpdateExpression="SET boardId = :boardId", ExpressionAttributeValues={":boardId": result["id"]})
+    if result and not result.get("categories"):
         result["categories"] = ["General"]
         table.update_item(Key={"PK": result["PK"], "SK": result["SK"]}, UpdateExpression="SET categories = :categories", ExpressionAttributeValues={":categories": result["categories"]})
     if not result:
@@ -70,7 +87,7 @@ def create_board(args: dict, user_id: str, authenticated: bool, organisation_adm
     data = args["input"]
     board_id, now = str(uuid.uuid4()), _now()
     item = {
-        "PK": f"BOARD#{board_id}", "SK": "META", "entity": "BOARD", "id": board_id,
+        "PK": f"BOARD#{board_id}", "SK": "META", "entity": "BOARD", "id": board_id, "boardId": board_id,
         "title": data["title"], "description": data.get("description"),
         "visibility": data.get("visibility") or organization["defaultVisibility"], "postingPolicy": data.get("postingPolicy", "ANYONE"),
         "votingMode": data.get("votingMode") or organization["defaultVotingMode"], "commentsEnabled": data.get("commentsEnabled", True),
@@ -88,6 +105,7 @@ def get_board(args: dict) -> dict:
 
 def update_board(args: dict, user_id: str, organisation_admin: bool) -> dict:
     data = args["input"]
+    _get_board(data["id"])
     _require_board_role(data["id"], user_id, owner_only=True, organisation_admin=organisation_admin)
     allowed = {"title", "description", "visibility", "postingPolicy", "votingMode", "commentsEnabled", "visibleVoteTotals", "anonymousPosting", "categories"}
     changes = {key: value for key, value in data.items() if key in allowed and value is not None}
@@ -177,7 +195,7 @@ def create_question(args: dict, participant_id: str, authenticated: bool, organi
     if not board.get("anonymousPosting", True) and not data.get("identifyAs"):
         raise PermissionError("This board requires an identified display name")
     question_id = str(uuid.uuid4())
-    pseudonym = data.get("identifyAs") or f"Guest {participant_id[-6:].upper()}"
+    pseudonym = data.get("identifyAs") or _pseudonym(participant_id)
     item = {
         "PK": f"BOARD#{data['boardId']}", "SK": f"QUESTION#{now}#{question_id}",
         "entity": "QUESTION", "id": question_id, "boardId": data["boardId"], "body": data["body"],
@@ -198,13 +216,83 @@ def _find_question(board_id: str, question_id: str) -> dict:
     return question
 
 
+def _migrate_legacy_pseudonyms(question: dict) -> dict:
+    """Replace previously exposed Guest identifiers with friendly names."""
+    changed = False
+    if str(question.get("authorDisplayName", "")).startswith("Guest "):
+        question["authorDisplayName"] = _pseudonym(f"question:{question['id']}")
+        changed = True
+    for comment in question.get("comments", []):
+        if not comment.get("boardId"):
+            comment["boardId"] = question["boardId"]
+            changed = True
+        if str(comment.get("authorDisplayName", "")).startswith("Guest "):
+            comment["authorDisplayName"] = _pseudonym(f"comment:{comment['id']}")
+            changed = True
+    if changed:
+        table.update_item(
+            Key={"PK": question["PK"], "SK": question["SK"]},
+            UpdateExpression="SET authorDisplayName = :author, comments = :comments",
+            ExpressionAttributeValues={":author": question["authorDisplayName"], ":comments": question.get("comments", [])},
+        )
+    return question
+
+
+def update_question(args: dict, user_id: str, organisation_admin: bool) -> dict:
+    data = args["input"]
+    _require_board_role(data["boardId"], user_id, organisation_admin=organisation_admin)
+    question = _find_question(data["boardId"], data["questionId"])
+    if data.get("category") and data["category"] not in (_get_board(data["boardId"]).get("categories") or ["General"]):
+        raise ValueError("That category is not enabled for this board")
+    changes = {key: value for key, value in data.items() if key in {"body", "category", "status"} and value is not None}
+    if not changes:
+        return _public(question)
+    names, values, assignments = {}, {}, []
+    for index, (key, value) in enumerate(changes.items()):
+        names[f"#field{index}"] = key
+        values[f":value{index}"] = value
+        assignments.append(f"#field{index} = :value{index}")
+    names["#updatedAt"] = "updatedAt"
+    values[":updatedAt"] = _now()
+    assignments.append("#updatedAt = :updatedAt")
+    result = table.update_item(Key={"PK": question["PK"], "SK": question["SK"]}, UpdateExpression="SET " + ", ".join(assignments), ExpressionAttributeNames=names, ExpressionAttributeValues=values, ReturnValues="ALL_NEW")
+    return _public(result["Attributes"])
+
+
+def delete_question(args: dict, user_id: str, organisation_admin: bool) -> dict:
+    _require_board_role(args["boardId"], user_id, organisation_admin=organisation_admin)
+    question = _find_question(args["boardId"], args["questionId"])
+    table.delete_item(Key={"PK": question["PK"], "SK": question["SK"]})
+    votes = table.query(KeyConditionExpression=Key("PK").eq(f"QUESTION#{args['questionId']}")).get("Items", [])
+    with table.batch_writer() as batch:
+        for vote in votes:
+            batch.delete_item(Key={"PK": vote["PK"], "SK": vote["SK"]})
+    return {**_public(question), "deleted": True, "updatedAt": _now()}
+
+
+def reorder_questions(args: dict, user_id: str, organisation_admin: bool) -> list[dict]:
+    _require_board_role(args["boardId"], user_id, organisation_admin=organisation_admin)
+    questions = {_public(item)["id"]: item for item in table.query(KeyConditionExpression=Key("PK").eq(f"BOARD#{args['boardId']}") & Key("SK").begins_with("QUESTION#")).get("Items", [])}
+    if len(args["questionIds"]) != len(questions) or set(args["questionIds"]) != set(questions):
+        raise ValueError("The reordered list must contain every question exactly once")
+    ordered = []
+    for index, question_id in enumerate(args["questionIds"]):
+        item = questions[question_id]
+        rank = f"{index:08d}"
+        table.update_item(Key={"PK": item["PK"], "SK": item["SK"]}, UpdateExpression="SET #rank = :rank, updatedAt = :now", ExpressionAttributeNames={"#rank": "rank"}, ExpressionAttributeValues={":rank": rank, ":now": _now()})
+        item["rank"] = rank
+        ordered.append(_public(item))
+    return ordered
+
+
 def list_questions(args: dict) -> dict:
     board_id, limit = args["boardId"], min(args.get("limit") or 100, 100)
     result = table.query(
         KeyConditionExpression=Key("PK").eq(f"BOARD#{board_id}") & Key("SK").begins_with("QUESTION#"),
         Limit=limit, ScanIndexForward=False,
     )
-    return {"items": [_public(item) for item in result.get("Items", [])], "nextToken": None}
+    items = [_public(_migrate_legacy_pseudonyms(item)) for item in result.get("Items", [])]
+    return {"items": sorted(items, key=lambda item: item.get("rank", item["createdAt"])), "nextToken": None}
 
 
 def cast_vote(args: dict, participant_id: str) -> dict:
@@ -242,12 +330,13 @@ def add_comment(args: dict, participant_id: str) -> dict:
     if not board["commentsEnabled"]:
         raise PermissionError("Comments are disabled")
     question = _find_question(data["boardId"], data["questionId"])
-    comment = {"id": str(uuid.uuid4()), "questionId": data["questionId"], "body": data["body"], "authorDisplayName": f"Guest {participant_id[-6:].upper()}", "createdAt": now}
+    comment = {"id": str(uuid.uuid4()), "boardId": data["boardId"], "questionId": data["questionId"], "body": data["body"], "authorDisplayName": _pseudonym(participant_id), "createdAt": now}
     table.update_item(Key={"PK": question["PK"], "SK": question["SK"]}, UpdateExpression="SET comments = list_append(if_not_exists(comments, :empty), :comment), updatedAt = :now", ExpressionAttributeValues={":empty": [], ":comment": [comment], ":now": now})
     return comment
 
 
 def select_question(args: dict, user_id: str, organisation_admin: bool) -> dict:
+    _get_board(args["boardId"])
     _require_board_role(args["boardId"], user_id, organisation_admin=organisation_admin)
     result = table.update_item(Key={"PK": f"BOARD#{args['boardId']}", "SK": "META"}, UpdateExpression="SET presentedQuestionId = :question, updatedAt = :now", ExpressionAttributeValues={":question": args.get("questionId"), ":now": _now()}, ReturnValues="ALL_NEW")
     return _public(result["Attributes"])
@@ -291,6 +380,9 @@ def handler(event: dict, _context: object) -> dict:
         "deleteBoard": lambda: delete_board(args, user_id, organisation_admin),
         "createQuestion": lambda: create_question(args, user_id, authenticated, organisation_admin),
         "castVote": lambda: cast_vote(args, user_id), "addComment": lambda: add_comment(args, user_id),
+        "updateQuestion": lambda: update_question(args, user_id, organisation_admin),
+        "deleteQuestion": lambda: delete_question(args, user_id, organisation_admin),
+        "reorderQuestions": lambda: reorder_questions(args, user_id, organisation_admin),
         "selectQuestion": lambda: select_question(args, user_id, organisation_admin),
         "assignModerator": lambda: assign_moderator(args, user_id),
         "inviteUser": lambda: invite_user(args, user_id, organisation_admin),

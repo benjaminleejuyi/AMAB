@@ -1,4 +1,4 @@
-export type QuestionStatus = 'Open' | 'Selected' | 'Answered'
+export type QuestionStatus = 'Open' | 'Selected' | 'Answered' | 'Archived'
 export type QuestionCategory = string
 
 export interface Comment {
@@ -20,4 +20,5 @@ export interface Question {
   viewerVote: -1 | 0 | 1
   comments: Comment[]
   createdAt: number
+  rank?: string
 }
