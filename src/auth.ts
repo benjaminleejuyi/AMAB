@@ -160,7 +160,11 @@ export interface BoardRealtimeHandlers {
   resync: () => void
 }
 
-const base64Url = (value: string) => btoa(value).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+// AppSync expects the websocket query parameters to contain ordinary padded
+// base64, URL-escaped as a query-string value. Removing the padding (or placing
+// raw `+`, `/` and `=` characters in the URL) can make AppSync reject the
+// handshake with "Request headers are invalid" before connection_ack.
+const websocketParameter = (value: string) => encodeURIComponent(btoa(value))
 
 export function subscribeToBoard(boardId: string, tokenProvider: () => Promise<string | undefined>, handlers: BoardRealtimeHandlers) {
   const config = appConfig()
@@ -190,11 +194,12 @@ export function subscribeToBoard(boardId: string, tokenProvider: () => Promise<s
     if (disposed || !config.appSyncEndpoint || !navigator.onLine) { if (!disposed) handlers.status('disconnected'); return }
     handlers.status(attempts ? 'reconnecting' : 'connecting')
     try {
-      const token = await tokenProvider()
-      const endpoint = new URL(config.appSyncEndpoint)
-      const authorization: Record<string, string> = token ? { host: endpoint.host, Authorization: token } : config.appSyncApiKey ? { host: endpoint.host, 'x-api-key': config.appSyncApiKey } : { host: endpoint.host }
+      const token = (await tokenProvider())?.trim()
+      const endpoint = new URL(config.appSyncEndpoint.trim())
+      const apiKey = config.appSyncApiKey?.trim()
+      const authorization: Record<string, string> = token ? { host: endpoint.host, Authorization: token } : apiKey ? { host: endpoint.host, 'x-api-key': apiKey } : { host: endpoint.host }
       const realtimeHost = endpoint.host.replace('appsync-api', 'appsync-realtime-api')
-      const url = `wss://${realtimeHost}${endpoint.pathname}?header=${base64Url(JSON.stringify(authorization))}&payload=e30=`
+      const url = `wss://${realtimeHost}${endpoint.pathname}?header=${websocketParameter(JSON.stringify(authorization))}&payload=${websocketParameter('{}')}`
       socket = new WebSocket(url, 'graphql-ws')
       socket.onopen = () => { socket?.send(JSON.stringify({ type: 'connection_init' })); scheduleWatchdog() }
       socket.onmessage = event => {
@@ -214,6 +219,9 @@ export function subscribeToBoard(boardId: string, tokenProvider: () => Promise<s
           if (data?.commentAdded) handlers.comment(data.commentAdded)
           if (data?.presentationChanged) handlers.presentation(data.presentationChanged)
           if (data?.questionsReordered) handlers.reordered(data.questionsReordered)
+        } else if (message.type === 'connection_error') {
+          console.error('AppSync realtime connection rejected:', message.payload)
+          handlers.status('error'); socket?.close(4006, 'AppSync rejected realtime authentication')
         } else if (message.type === 'error') { handlers.status('error'); socket?.close(4004, 'Subscription error') }
       }
       socket.onerror = () => { handlers.status('error'); socket?.close(4005, 'WebSocket error') }

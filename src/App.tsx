@@ -9,6 +9,7 @@ import { activeIdToken, commentOnQuestion, completeNewPassword, createBoard, del
 import { demoBoard, getDemoPseudonym, readDemoQuestions, resetDemoQuestions, writeDemoQuestions } from './demo'
 
 type SortMode = 'Manual' | 'Top' | 'Newest' | 'Oldest'
+type QuestionView = 'Active' | 'Unanswered' | 'Archived'
 
 const fromPersistedQuestion = (item: PersistedQuestion, index = 0): Question => ({ id: item.id, author: item.authorDisplayName, avatar: item.authorDisplayName.split(' ').map(word => word[0]).join('').slice(0, 2), body: item.body, category: item.category as QuestionCategory, status: item.status === 'SELECTED' ? 'Selected' : item.status === 'ANSWERED' ? 'Answered' : item.status === 'ARCHIVED' ? 'Archived' : 'Open', rank: item.rank, upvotes: item.upvotes, downvotes: item.downvotes, viewerVote: 0, comments: (item.comments || []).map(comment => ({ id: comment.id, author: comment.authorDisplayName, body: comment.body, time: new Date(comment.createdAt).toLocaleString() })), createdAt: Date.parse(item.createdAt) || index })
 
@@ -68,7 +69,7 @@ function QuestionCard({ question, onVote, onPresent, onComment, onAdmin, votingM
       {canManage && <div className="admin-question-actions" aria-label="Question administration">
         <button onClick={() => onAdmin(question.id, 'edit')}><Pencil size={14} /> Edit</button>
         <button onClick={() => onAdmin(question.id, 'answer')}><CheckCircle2 size={14} /> {question.status === 'Answered' ? 'Reopen' : 'Answered'}</button>
-        <button onClick={() => onAdmin(question.id, 'archive')}><Archive size={14} /> Archive</button>
+        <button onClick={() => onAdmin(question.id, 'archive')}><Archive size={14} /> {question.status === 'Archived' ? 'Restore' : 'Archive'}</button>
         <button aria-label="Move question up" onClick={() => onAdmin(question.id, 'up')}><ChevronUp size={14} /></button>
         <button aria-label="Move question down" onClick={() => onAdmin(question.id, 'down')}><ChevronDown size={14} /></button>
         <button className="destructive" onClick={() => onAdmin(question.id, 'delete')}><Trash2 size={14} /> Delete</button>
@@ -107,12 +108,17 @@ function BoardPage({ boardId, navigate, session }: { boardId: string, navigate: 
   const [category, setCategory] = useState<string>('All')
   const [sort, setSort] = useState<SortMode>('Top')
   const [query, setQuery] = useState('')
+  const [questionView, setQuestionView] = useState<QuestionView>('Active')
   const [composerOpen, setComposerOpen] = useState(false)
   const [newQuestion, setNewQuestion] = useState('')
   const [newCategory, setNewCategory] = useState<QuestionCategory>('General')
   const [presenting, setPresenting] = useState<Question | null>(null)
   const [shareNotice, setShareNotice] = useState(false)
   const [realtimeStatus, setRealtimeStatus] = useState<RealtimeStatus>('disconnected')
+  const [questionDialog, setQuestionDialog] = useState<{ kind: 'edit' | 'delete', question: Question } | null>(null)
+  const [editBody, setEditBody] = useState('')
+  const [editCategory, setEditCategory] = useState<string>('')
+  const [dialogBusy, setDialogBusy] = useState(false)
   const initials = session?.email.slice(0, 2).toUpperCase() ?? 'GU'
   useEffect(() => {
     if (isDemo) {
@@ -151,10 +157,12 @@ function BoardPage({ boardId, navigate, session }: { boardId: string, navigate: 
   }, [boardId, isDemo, session])
 
   const visibleQuestions = useMemo(() => questions
+    .filter(item => questionView === 'Archived' ? item.status === 'Archived' : item.status !== 'Archived')
+    .filter(item => questionView !== 'Unanswered' || item.status === 'Open' || item.status === 'Selected')
     .filter(item => category === 'All' || item.category === category)
     .filter(item => item.body.toLowerCase().includes(query.toLowerCase()))
     .sort((a, b) => sort === 'Manual' ? (a.rank || '').localeCompare(b.rank || '') : sort === 'Top' ? (b.upvotes - b.downvotes) - (a.upvotes - a.downvotes) : sort === 'Newest' ? b.createdAt - a.createdAt : a.createdAt - b.createdAt),
-  [questions, category, query, sort])
+  [questions, questionView, category, query, sort])
 
   const vote = async (id: string, nextVote: -1 | 1) => {
     const currentQuestion = questions.find(item => item.id === id)
@@ -220,20 +228,11 @@ function BoardPage({ boardId, navigate, session }: { boardId: string, navigate: 
     if (!session || isDemo) return
     const question = questions.find(item => item.id === id)
     if (!question) return
+    if (action === 'edit') { setEditBody(question.body); setEditCategory(question.category); setQuestionDialog({ kind: 'edit', question }); return }
+    if (action === 'delete') { setQuestionDialog({ kind: 'delete', question }); return }
     try {
-      if (action === 'delete') {
-        if (!window.confirm('Delete this question and all of its comments and votes?')) return
-        await deleteQuestion(boardId, id, session.idToken)
-        setQuestions(current => current.filter(item => item.id !== id))
-      } else if (action === 'edit') {
-        const body = window.prompt('Edit question', question.body)?.trim()
-        if (!body) return
-        const categoryName = window.prompt(`Category (${boardCategories.join(', ')})`, question.category)?.trim()
-        if (!categoryName || !boardCategories.includes(categoryName)) { setBoardError('Choose one of the configured board categories.'); return }
-        const saved = await updateQuestion({ boardId, questionId: id, body, category: categoryName }, session.idToken)
-        setQuestions(current => current.map(item => item.id === id ? { ...fromPersistedQuestion(saved), viewerVote: item.viewerVote } : item))
-      } else if (action === 'answer' || action === 'archive') {
-        const status = action === 'archive' ? 'ARCHIVED' : question.status === 'Answered' ? 'OPEN' : 'ANSWERED'
+      if (action === 'answer' || action === 'archive') {
+        const status = action === 'archive' ? question.status === 'Archived' ? 'OPEN' : 'ARCHIVED' : question.status === 'Answered' ? 'OPEN' : 'ANSWERED'
         const saved = await updateQuestion({ boardId, questionId: id, status }, session.idToken)
         setQuestions(current => current.map(item => item.id === id ? { ...fromPersistedQuestion(saved), viewerVote: item.viewerVote } : item))
       } else {
@@ -250,6 +249,28 @@ function BoardPage({ boardId, navigate, session }: { boardId: string, navigate: 
     } catch (reason) { setBoardError(reason instanceof Error ? reason.message : 'Could not administer this question.') }
   }
 
+  const saveQuestionEdit = async () => {
+    if (!session || questionDialog?.kind !== 'edit' || !editBody.trim() || !boardCategories.includes(editCategory)) return
+    setDialogBusy(true)
+    try {
+      const saved = await updateQuestion({ boardId, questionId: questionDialog.question.id, body: editBody.trim(), category: editCategory }, session.idToken)
+      setQuestions(current => current.map(item => item.id === saved.id ? { ...fromPersistedQuestion(saved), viewerVote: item.viewerVote } : item))
+      setQuestionDialog(null); setBoardError('')
+    } catch (reason) { setBoardError(reason instanceof Error ? reason.message : 'Could not edit this question.') }
+    finally { setDialogBusy(false) }
+  }
+
+  const confirmQuestionDelete = async () => {
+    if (!session || questionDialog?.kind !== 'delete') return
+    setDialogBusy(true)
+    try {
+      await deleteQuestion(boardId, questionDialog.question.id, session.idToken)
+      setQuestions(current => current.filter(item => item.id !== questionDialog.question.id))
+      setQuestionDialog(null); setBoardError('')
+    } catch (reason) { setBoardError(reason instanceof Error ? reason.message : 'Could not delete this question.') }
+    finally { setDialogBusy(false) }
+  }
+
   const shareBoard = async () => {
     const url = `${window.location.origin}/boards/${boardId}`
     try {
@@ -261,7 +282,7 @@ function BoardPage({ boardId, navigate, session }: { boardId: string, navigate: 
     window.setTimeout(() => setShareNotice(false), 2200)
   }
   const canPost = (anonymousPosting || !!session) && (postingPolicy === 'ANYONE' || (postingPolicy === 'AUTHENTICATED' && !!session) || (postingPolicy === 'MODERATORS' && !!session))
-  const resetDemo = () => { setQuestions(resetDemoQuestions()); setPresenting(null); setCategory('All'); setQuery('') }
+  const resetDemo = () => { setQuestions(resetDemoQuestions()); setPresenting(null); setCategory('All'); setQuestionView('Active'); setQuery('') }
 
   return (
     <div className="app-shell">
@@ -285,12 +306,13 @@ function BoardPage({ boardId, navigate, session }: { boardId: string, navigate: 
         <section className="toolbar">
           <div className="category-tabs">{['All', ...boardCategories].map(item => <button key={item} className={category === item ? 'active' : ''} onClick={() => setCategory(item)}>{item}</button>)}</div>
           <div className="tools">
+            <label className="view-filter">View: <select value={questionView} onChange={event => setQuestionView(event.target.value as QuestionView)}><option>Active</option><option>Unanswered</option>{session && !isDemo && <option>Archived</option>}</select><ChevronDown size={15} /></label>
             <label className="search"><Search size={17} /><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search questions" /></label>
             <label className="sort">Sort: <select value={sort} onChange={event => setSort(event.target.value as SortMode)}>{session && !isDemo && <option>Manual</option>}<option>Top</option><option>Newest</option><option>Oldest</option></select><ChevronDown size={15} /></label>
           </div>
         </section>
 
-        <section className="content-heading"><div><h2>Questions</h2><span>{visibleQuestions.length} of {questions.length}</span></div>{!isDemo && <span className={`realtime-status ${realtimeStatus}`} title="AppSync live connection">{realtimeStatus === 'connected' ? <Wifi size={15} /> : <WifiOff size={15} />} {realtimeStatus === 'connected' ? 'Live' : realtimeStatus === 'reconnecting' ? 'Reconnecting…' : realtimeStatus === 'connecting' ? 'Connecting…' : 'Offline'}</span>}</section>
+        <section className="content-heading"><div><h2>{questionView} questions</h2><span>{visibleQuestions.length} shown</span></div>{!isDemo && <span className={`realtime-status ${realtimeStatus}`} title="AppSync live connection">{realtimeStatus === 'connected' ? <Wifi size={15} /> : <WifiOff size={15} />} {realtimeStatus === 'connected' ? 'Live' : realtimeStatus === 'reconnecting' ? 'Reconnecting…' : realtimeStatus === 'connecting' ? 'Connecting…' : 'Offline'}</span>}</section>
         <section className="question-list">
           {visibleQuestions.map(question => <QuestionCard key={question.id} question={question} onVote={vote} onPresent={startPresentation} onComment={addComment} onAdmin={administerQuestion} votingMode={votingMode} commentsEnabled={commentsEnabled} visibleVoteTotals={visibleVoteTotals} canPresent={isDemo || !!session} canManage={!!session && !isDemo} />)}
           {visibleQuestions.length === 0 && <div className="empty"><Search size={28} /><h3>No questions found</h3><p>Try a different search or category.</p></div>}
@@ -302,6 +324,19 @@ function BoardPage({ boardId, navigate, session }: { boardId: string, navigate: 
         <span className="composer-icon"><MessageCircle size={22} /></span><h2 id="ask-title">Ask a question</h2><p>Share what’s on your mind. You’ll appear as <b>{anonymousPosting ? 'a generated pseudonym' : session?.email}</b>.</p>
         <textarea autoFocus maxLength={280} value={newQuestion} onChange={event => setNewQuestion(event.target.value)} placeholder="What would you like to ask?" />
         <div className="composer-footer"><select value={newCategory} onChange={event => setNewCategory(event.target.value as QuestionCategory)}>{boardCategories.map(item => <option key={item}>{item}</option>)}</select><span>{newQuestion.length}/280</span><button onClick={submitQuestion}>Post question <ArrowUp size={17} /></button></div>
+      </section></div>}
+
+      {questionDialog?.kind === 'edit' && <div className="modal-backdrop" onMouseDown={() => !dialogBusy && setQuestionDialog(null)}><section className="question-dialog" role="dialog" aria-modal="true" aria-labelledby="edit-question-title" onMouseDown={event => event.stopPropagation()}>
+        <button className="modal-close" onClick={() => setQuestionDialog(null)} aria-label="Close edit question"><X size={20} /></button>
+        <span className="composer-icon"><Pencil size={21} /></span><h2 id="edit-question-title">Edit question</h2><p>Update the question text or move it to another category.</p>
+        <label>Question<textarea autoFocus maxLength={280} value={editBody} onChange={event => setEditBody(event.target.value)} /></label>
+        <label>Category<select value={editCategory} onChange={event => setEditCategory(event.target.value)}>{boardCategories.map(item => <option key={item}>{item}</option>)}</select></label>
+        <div className="dialog-actions"><button onClick={() => setQuestionDialog(null)}>Cancel</button><button disabled={dialogBusy || !editBody.trim()} onClick={saveQuestionEdit}>{dialogBusy ? 'Saving…' : 'Save changes'}</button></div>
+      </section></div>}
+
+      {questionDialog?.kind === 'delete' && <div className="modal-backdrop" onMouseDown={() => !dialogBusy && setQuestionDialog(null)}><section className="question-dialog delete-dialog" role="alertdialog" aria-modal="true" aria-labelledby="delete-question-title" onMouseDown={event => event.stopPropagation()}>
+        <span className="danger-icon"><Trash2 size={22} /></span><h2 id="delete-question-title">Delete this question?</h2><p>This permanently removes the question, its comments, and its votes. This action cannot be undone.</p><blockquote>{questionDialog.question.body}</blockquote>
+        <div className="dialog-actions"><button onClick={() => setQuestionDialog(null)}>Cancel</button><button className="delete-confirm" disabled={dialogBusy} onClick={confirmQuestionDelete}>{dialogBusy ? 'Deleting…' : 'Delete question'}</button></div>
       </section></div>}
 
       {presenting && <div className="presentation" role="dialog" aria-modal="true" aria-label="Presentation mode">

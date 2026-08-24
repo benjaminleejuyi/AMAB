@@ -13,7 +13,8 @@ describe('AMA board', () => {
       const data = query.includes('query Board') ? { getBoard: { id: 'all-company', title: 'Ask the leadership team', description: 'Demo', visibility: 'PUBLIC', postingPolicy: 'ANYONE', votingMode: 'UP_DOWN', commentsEnabled: true, visibleVoteTotals: true, anonymousPosting: true, categories: ['Strategy', 'Product'] } }
         : query.includes('query Questions') ? { listQuestions: { items: [question] } }
           : query.includes('mutation Post') ? { createQuestion: { ...question, id: 'new-question', body: JSON.parse(String(options.body)).variables.input.body } }
-            : query.includes('mutation UpdateQuestion') ? { updateQuestion: { ...question, body: JSON.parse(String(options.body)).variables.input.body, rank: new Date().toISOString() } }
+            : query.includes('mutation UpdateQuestion') ? { updateQuestion: { ...question, ...JSON.parse(String(options.body)).variables.input, status: JSON.parse(String(options.body)).variables.input.status || question.status, rank: new Date().toISOString() } }
+              : query.includes('mutation DeleteQuestion') ? { deleteQuestion: { ...question, deleted: true } }
             : query.includes('mutation Present') ? { selectQuestion: { id: 'all-company', presentedQuestionId: 'q1' } }
               : query.includes('query ListBoards') ? { listBoards: [] }
                 : query.includes('query Org') ? { getOrganizationSettings: { organizationName: 'Anyhow Only', defaultVisibility: 'UNLISTED', defaultVotingMode: 'UP_DOWN', membersCanCreateBoards: false } }
@@ -85,12 +86,38 @@ describe('AMA board', () => {
   it('allows an administrator to edit a persisted question', async () => {
     window.history.replaceState({}, '', '/boards/real-board')
     sessionStorage.setItem('ama-board-session', JSON.stringify({ accessToken: 'access', idToken, email: 'admin@example.com', groups: ['Admins'] }))
-    vi.spyOn(window, 'prompt').mockReturnValueOnce('What is the updated priority?').mockReturnValueOnce('Strategy')
     render(<App />)
     await screen.findByText('What should we focus on?')
     fireEvent.click(screen.getByRole('button', { name: /^edit$/i }))
+    const dialog = screen.getByRole('dialog', { name: /edit question/i })
+    fireEvent.change(dialog.querySelector('textarea')!, { target: { value: 'What is the updated priority?' } })
+    expect(screen.getByDisplayValue('What is the updated priority?')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([, options]) => String(options?.body).includes('mutation UpdateQuestion'))).toBe(true))
     expect(await screen.findByText('What is the updated priority?')).toBeInTheDocument()
-    expect(vi.mocked(fetch).mock.calls.some(([, options]) => String(options?.body).includes('mutation UpdateQuestion'))).toBe(true)
+  })
+
+  it('hides archived questions by default and lets administrators filter and restore them', async () => {
+    window.history.replaceState({}, '', '/boards/real-board')
+    sessionStorage.setItem('ama-board-session', JSON.stringify({ accessToken: 'access', idToken, email: 'admin@example.com', groups: ['Admins'] }))
+    render(<App />)
+    await screen.findByText('What should we focus on?')
+    fireEvent.click(screen.getByRole('button', { name: /^archive$/i }))
+    await waitFor(() => expect(screen.queryByText('What should we focus on?')).not.toBeInTheDocument())
+    fireEvent.change(screen.getByLabelText(/view:/i), { target: { value: 'Archived' } })
+    expect(await screen.findByText('What should we focus on?')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^restore$/i })).toBeInTheDocument()
+  })
+
+  it('uses an in-app confirmation dialog before deleting a question', async () => {
+    window.history.replaceState({}, '', '/boards/real-board')
+    sessionStorage.setItem('ama-board-session', JSON.stringify({ accessToken: 'access', idToken, email: 'admin@example.com', groups: ['Admins'] }))
+    render(<App />)
+    await screen.findByText('What should we focus on?')
+    fireEvent.click(screen.getByRole('button', { name: /^delete$/i }))
+    expect(screen.getByRole('alertdialog', { name: /delete this question/i })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /delete question/i }))
+    await waitFor(() => expect(screen.queryByText('What should we focus on?')).not.toBeInTheDocument())
   })
 
   it('shows the signed-in account and site administration', () => {
