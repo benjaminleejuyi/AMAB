@@ -5,7 +5,7 @@ import {
   Pencil, Send, Settings, Share2, ShieldCheck, Sparkles, Trash2, UserCog, Wifi, WifiOff, X,
 } from 'lucide-react'
 import type { Question, QuestionCategory } from './types'
-import { activeIdToken, commentOnQuestion, completeNewPassword, createBoard, deleteBoard, deleteQuestion, getBoard, getMySettings, getOrganizationSettings, getQuestions, inviteUser, listBoards, NewPasswordRequiredError, postQuestion, presentQuestion, readSession, reorderQuestions, saveBoard, saveMySettings, saveOrganizationSettings, setCommentVisibility, signIn, signOut, subscribeToBoard, updateQuestion, voteQuestion, type AuthSession, type BoardSummary, type PersistedQuestion, type RealtimeStatus } from './auth'
+import { activeIdToken, commentOnQuestion, completeNewPassword, createBoard, deleteBoard, deleteQuestion, getBoard, getMyBoardAccess, getMySettings, getOrganizationSettings, getQuestions, inviteUser, listBoardMembers, listBoards, listModerationEvents, NewPasswordRequiredError, postQuestion, presentQuestion, readSession, removeBoardMember, reorderQuestions, saveBoard, saveMySettings, saveOrganizationSettings, setCommentVisibility, signIn, signOut, subscribeToBoard, updateQuestion, voteQuestion, type AuthSession, type BoardAccess, type BoardMember, type BoardSummary, type ModerationEvent, type PersistedQuestion, type RealtimeStatus } from './auth'
 import { demoBoard, getDemoPseudonym, readDemoQuestions, resetDemoQuestions, writeDemoQuestions } from './demo'
 
 type SortMode = 'Manual' | 'Top' | 'Newest' | 'Oldest'
@@ -117,6 +117,7 @@ function BoardPage({ boardId, navigate, session }: { boardId: string, navigate: 
   const [presenting, setPresenting] = useState<Question | null>(null)
   const [shareNotice, setShareNotice] = useState(false)
   const [realtimeStatus, setRealtimeStatus] = useState<RealtimeStatus>('disconnected')
+  const [access, setAccess] = useState<BoardAccess | null>(isDemo ? { role: 'OWNER', canEditBoard: true, canModerateQuestions: true, canModerateComments: true, canPresent: true, canDeleteBoard: true } : null)
   const [questionDialog, setQuestionDialog] = useState<{ kind: 'edit' | 'delete', question: Question } | null>(null)
   const [editBody, setEditBody] = useState('')
   const [editCategory, setEditCategory] = useState<string>('')
@@ -131,6 +132,11 @@ function BoardPage({ boardId, navigate, session }: { boardId: string, navigate: 
     const token = session?.idToken
     Promise.all([getBoard(boardId, token), getQuestions(boardId, token)]).then(([board, items]) => { const available = board.categories?.length ? board.categories : ['General']; setBoardTitle(board.title); setBoardDescription(board.description || ''); setBoardCategories(available); setNewCategory(available[0]); setVotingMode(board.votingMode); setCommentsEnabled(board.commentsEnabled); setVisibleVoteTotals(board.visibleVoteTotals); setPostingPolicy(board.postingPolicy); setAnonymousPosting(board.anonymousPosting); setQuestions(items.map(fromPersistedQuestion)); setBoardError('') }).catch(reason => setBoardError(reason instanceof Error ? reason.message : 'Could not load this board.'))
   }, [boardId, isDemo, session?.idToken])
+
+  useEffect(() => {
+    if (isDemo || !session) return
+    getMyBoardAccess(boardId, session.idToken).then(setAccess).catch(() => setAccess(null))
+  }, [boardId, isDemo, session])
 
   useEffect(() => {
     if (isDemo) return
@@ -299,7 +305,7 @@ function BoardPage({ boardId, navigate, session }: { boardId: string, navigate: 
       <header>
         <button className="brand brand-button" onClick={() => navigate('/')}><span><Sparkles size={20} /></span> AMA Board</button>
         <nav aria-label="Main navigation"><button className="active"><LayoutGrid size={17} /> Board</button><button onClick={() => navigate('/about')}><CircleHelp size={17} /> About</button></nav>
-        <div className="header-actions"><button className="share" onClick={shareBoard}><Share2 size={16} /> Share</button>{session && !isDemo && <button className="settings" onClick={() => navigate(`/boards/${boardId}/settings`)} aria-label="Board settings"><Settings size={18} /></button>}<button className="profile profile-button" title={session?.email ?? 'Guest'} onClick={() => navigate(session ? '/admin' : '/')}>{initials}</button></div>
+        <div className="header-actions"><button className="share" onClick={shareBoard}><Share2 size={16} /> Share</button>{access?.canEditBoard && !isDemo && <button className="settings" onClick={() => navigate(`/boards/${boardId}/settings`)} aria-label="Board settings"><Settings size={18} /></button>}<button className="profile profile-button" title={session?.email ?? 'Guest'} onClick={() => navigate(session ? '/admin' : '/')}>{initials}</button></div>
       </header>
 
       <main>
@@ -324,7 +330,7 @@ function BoardPage({ boardId, navigate, session }: { boardId: string, navigate: 
 
         <section className="content-heading"><div><h2>{questionView} questions</h2><span>{visibleQuestions.length} shown</span></div>{!isDemo && <span className={`realtime-status ${realtimeStatus}`} title="AppSync live connection">{realtimeStatus === 'connected' ? <Wifi size={15} /> : <WifiOff size={15} />} {realtimeStatus === 'connected' ? 'Live' : realtimeStatus === 'reconnecting' ? 'Reconnecting…' : realtimeStatus === 'connecting' ? 'Connecting…' : 'Offline'}</span>}</section>
         <section className="question-list">
-          {visibleQuestions.map(question => <QuestionCard key={question.id} question={question} onVote={vote} onPresent={startPresentation} onComment={addComment} onModerateComment={moderateComment} onAdmin={administerQuestion} votingMode={votingMode} commentsEnabled={commentsEnabled} visibleVoteTotals={visibleVoteTotals} canPresent={isDemo || !!session} canManage={!!session && !isDemo} />)}
+          {visibleQuestions.map(question => <QuestionCard key={question.id} question={question} onVote={vote} onPresent={startPresentation} onComment={addComment} onModerateComment={moderateComment} onAdmin={administerQuestion} votingMode={votingMode} commentsEnabled={commentsEnabled} visibleVoteTotals={visibleVoteTotals} canPresent={!!access?.canPresent} canManage={!!access?.canModerateQuestions && !isDemo} />)}
           {visibleQuestions.length === 0 && <div className="empty"><Search size={28} /><h3>No questions found</h3><p>Try a different search or category.</p></div>}
         </section>
       </main>
@@ -440,7 +446,7 @@ function AboutPage({ navigate, onSignedIn, session, onSignOut }: { navigate: (pa
 }
 
 function SettingsPage({ boardId, navigate, session }: { boardId: string, navigate: (path: string) => void, session: AuthSession }) {
-  const [activeTab, setActiveTab] = useState<'General' | 'Participation' | 'Categories' | 'Moderators' | 'Presentation'>('General')
+  const [activeTab, setActiveTab] = useState<'General' | 'Participation' | 'Categories' | 'Moderators' | 'Presentation' | 'Activity'>('General')
   const [saved, setSaved] = useState(false)
   const [comments, setComments] = useState(true)
   const [anonymous, setAnonymous] = useState(true)
@@ -456,8 +462,12 @@ function SettingsPage({ boardId, navigate, session }: { boardId: string, navigat
   const [newCategory, setNewCategory] = useState('')
   const [deleteStatus, setDeleteStatus] = useState('')
   const [settingsStatus, setSettingsStatus] = useState('')
+  const [members, setMembers] = useState<BoardMember[]>([])
+  const [activity, setActivity] = useState<ModerationEvent[]>([])
   useEffect(() => {
     getBoard(boardId, session.idToken).then(board => { setTitle(board.title); setDescription(board.description || ''); setVisibility(board.visibility); setVotingMode(board.votingMode); setPostingPolicy(board.postingPolicy); setComments(board.commentsEnabled); setShowVotes(board.visibleVoteTotals); setAnonymous(board.anonymousPosting); setBoardCategories(board.categories?.length ? board.categories : ['General']); setSettingsStatus('') }).catch(reason => setSettingsStatus(reason instanceof Error ? reason.message : 'Could not load board settings.'))
+    listBoardMembers(boardId, session.idToken).then(setMembers).catch(reason => setInviteStatus(reason instanceof Error ? reason.message : 'Could not load board members.'))
+    listModerationEvents(boardId, session.idToken).then(setActivity).catch(() => setActivity([]))
   }, [boardId, session.idToken])
   const persistBoard = async () => {
     setSaved(false); setSettingsStatus('Saving…')
@@ -466,8 +476,13 @@ function SettingsPage({ boardId, navigate, session }: { boardId: string, navigat
   }
   const sendInvite = async () => {
     setInviteStatus('Sending…')
-    try { await inviteUser(boardId, inviteEmail, session.idToken); setInviteStatus(`Invitation sent to ${inviteEmail}`); setInviteEmail('') }
+    try { const member = await inviteUser(boardId, inviteEmail, session.idToken); setMembers(current => [...current.filter(item => item.userId !== member.userId), member]); setInviteStatus(`Invitation sent to ${inviteEmail}`); setInviteEmail('') }
     catch (reason) { setInviteStatus(reason instanceof Error ? reason.message : 'Could not send invitation.') }
+  }
+  const revokeMember = async (member: BoardMember) => {
+    setInviteStatus(`Removing ${member.email || member.userId}…`)
+    try { await removeBoardMember(boardId, member.userId, session.idToken); setMembers(current => current.filter(item => item.userId !== member.userId)); setInviteStatus('Moderator access removed.') }
+    catch (reason) { setInviteStatus(reason instanceof Error ? reason.message : 'Could not remove this moderator.') }
   }
   const removeBoard = async () => {
     if (!window.confirm(`Delete “${title}” and all of its questions, comments, and votes? This cannot be undone.`)) return
@@ -477,12 +492,13 @@ function SettingsPage({ boardId, navigate, session }: { boardId: string, navigat
   }
   return <div className="settings-shell"><header><button className="brand brand-button" onClick={() => navigate('/')}><span><Sparkles size={20} /></span> AMA Board</button><button className="back-board" onClick={() => navigate(`/boards/${boardId}`)}>← Back to board</button><button className="profile profile-button" title={session.email} onClick={() => navigate('/admin')}>{session.email.slice(0, 2).toUpperCase()}</button></header>
     <main className="settings-page"><div className="settings-title"><div><span>Board administration</span><h1>Board settings</h1><p>Control how people find and participate in this AMA.</p>{settingsStatus && <p role="status">{settingsStatus}</p>}</div><button onClick={persistBoard}>{saved ? <><Check size={17} /> Saved</> : 'Save changes'}</button></div>
-      <section className="settings-grid"><aside>{(['General', 'Participation', 'Categories', 'Moderators', 'Presentation'] as const).map(tab => <button key={tab} className={activeTab === tab ? 'active' : ''} onClick={() => setActiveTab(tab)}>{tab}</button>)}</aside><div className="settings-panels">
+      <section className="settings-grid"><aside>{(['General', 'Participation', 'Categories', 'Moderators', 'Presentation', 'Activity'] as const).map(tab => <button key={tab} className={activeTab === tab ? 'active' : ''} onClick={() => setActiveTab(tab)}>{tab}</button>)}</aside><div className="settings-panels">
         {activeTab === 'General' && <article><h2>Board details</h2><p>The information participants see at the top of this board.</p><label>Board title<input value={title} onChange={event => setTitle(event.target.value)} /></label><label>Description<textarea value={description} onChange={event => setDescription(event.target.value)} /></label><label>Board URL<input value={`/boards/${boardId}`} readOnly /></label><hr /><h2>Danger zone</h2><p>Deleting a board permanently removes its questions, comments, and votes.</p><button className="danger-button" onClick={removeBoard}><Trash2 size={16} /> Delete board</button>{deleteStatus && <p role="status">{deleteStatus}</p>}</article>}
         {activeTab === 'Participation' && <article><h2>Access and participation</h2><p>Choose how your organisation can take part.</p><label>Board visibility<select value={visibility} onChange={event => setVisibility(event.target.value)}><option value="PUBLIC">Public</option><option value="UNLISTED">Unlisted — link only</option></select></label><label>Who can post<select value={postingPolicy} onChange={event => setPostingPolicy(event.target.value)}><option value="ANYONE">Anyone</option><option value="AUTHENTICATED">Signed-in users</option><option value="MODERATORS">Moderators only</option><option value="CLOSED">Closed</option></select></label><label>Voting mode<select value={votingMode} onChange={event => setVotingMode(event.target.value)}><option value="UP_DOWN">Upvotes and downvotes</option><option value="UPVOTE">Upvotes only</option><option value="NONE">No voting</option></select></label><div className="setting-row"><div><b>Allow comments</b><span>Participants can comment without pre-moderation.</span></div><button className={`switch ${comments ? 'on' : ''}`} onClick={() => setComments(!comments)} aria-label="Allow comments"><i /></button></div><div className="setting-row"><div><b>Allow pseudonyms</b><span>Assign a friendly identity when no name is provided.</span></div><button className={`switch ${anonymous ? 'on' : ''}`} onClick={() => setAnonymous(!anonymous)} aria-label="Allow pseudonyms"><i /></button></div></article>}
         {activeTab === 'Categories' && <article><h2>Question categories</h2><p>Categories appear as filters on this board and in the question composer.</p>{boardCategories.map(item => <div className="member-row" key={item}><div><b>{item}</b></div><button disabled={boardCategories.length === 1} onClick={() => setBoardCategories(current => current.filter(categoryName => categoryName !== item))}>Remove</button></div>)}<div className="invite-row"><input value={newCategory} onChange={event => setNewCategory(event.target.value)} placeholder="New category" /><button disabled={!newCategory.trim() || boardCategories.some(item => item.toLowerCase() === newCategory.trim().toLowerCase())} onClick={() => { setBoardCategories(current => [...current, newCategory.trim()]); setNewCategory('') }}>Add category</button></div><p>Use “Save changes” after editing categories.</p></article>}
-        {activeTab === 'Moderators' && <article><h2>Board moderators</h2><p>Invite colleagues who can organise questions and control presentation mode.</p><div className="member-row"><span className="profile">{session.email.slice(0, 2).toUpperCase()}</span><div><b>{session.email}</b><small>Organisation administrator</small></div><strong>Admin</strong></div><div className="invite-row"><input type="email" value={inviteEmail} onChange={event => setInviteEmail(event.target.value)} placeholder="colleague@company.com" /><button disabled={!inviteEmail} onClick={sendInvite}>Send invitation</button></div>{inviteStatus && <p role="status">{inviteStatus}</p>}</article>}
+        {activeTab === 'Moderators' && <article><h2>Board members</h2><p>Owners and moderators can organise questions, moderate comments, and control presentation mode.</p>{members.map(member => <div className="member-row" key={member.userId}><span className="profile">{(member.email || member.userId).slice(0, 2).toUpperCase()}</span><div><b>{member.email || member.userId}</b><small>{member.role === 'OWNER' ? 'Board owner' : 'Delegated moderator'}</small></div><strong>{member.role}</strong>{member.role === 'MODERATOR' && <button className="member-remove" onClick={() => revokeMember(member)}>Remove</button>}</div>)}<div className="invite-row"><input type="email" value={inviteEmail} onChange={event => setInviteEmail(event.target.value)} placeholder="colleague@company.com" /><button disabled={!inviteEmail} onClick={sendInvite}>Send invitation</button></div>{inviteStatus && <p role="status">{inviteStatus}</p>}</article>}
         {activeTab === 'Presentation' && <article><h2>Presentation preferences</h2><p>Choose what the audience sees when a question is presented.</p><label>Presentation heading<input value={title} onChange={event => setTitle(event.target.value)} /></label><div className="setting-row"><div><b>Show vote totals</b><span>Display the selected question's live score.</span></div><button className={`switch ${showVotes ? 'on' : ''}`} onClick={() => setShowVotes(!showVotes)} aria-label="Show vote totals"><i /></button></div></article>}
+        {activeTab === 'Activity' && <article><h2>Moderation activity</h2><p>A record of recent question, comment, and membership actions.</p>{activity.length === 0 && <p>No moderation activity yet.</p>}{activity.map(event => <div className="activity-row" key={event.id}><div><b>{event.action.toLowerCase().replaceAll('_', ' ')}</b><span>{event.targetType.toLowerCase()} · {event.targetId}</span></div><time dateTime={event.createdAt}>{new Date(event.createdAt).toLocaleString()}</time></div>)}</article>}
       </div></section>
     </main></div>
 }

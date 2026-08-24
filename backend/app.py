@@ -78,6 +78,56 @@ def _require_board_role(board_id: str, user_id: str, owner_only: bool = False, o
     raise PermissionError("You do not have permission to manage this board")
 
 
+def _board_access(board_id: str, user_id: str, organisation_admin: bool) -> dict:
+    board = _get_board(board_id)
+    role = "OWNER" if board["createdBy"] == user_id else None
+    if not role:
+        member = table.get_item(Key={"PK": f"BOARD#{board_id}", "SK": f"MEMBER#{user_id}"}).get("Item")
+        role = member.get("role") if member else None
+    manages = organisation_admin or role in {"OWNER", "MODERATOR"}
+    owns = organisation_admin or role == "OWNER"
+    return {
+        "role": role, "canEditBoard": owns, "canModerateQuestions": manages,
+        "canModerateComments": manages, "canPresent": manages, "canDeleteBoard": owns,
+    }
+
+
+def _audit(board_id: str, actor_id: str, action: str, target_type: str, target_id: str) -> None:
+    now, event_id = _now(), str(uuid.uuid4())
+    table.put_item(Item={
+        "PK": f"BOARD#{board_id}", "SK": f"AUDIT#{now}#{event_id}", "entity": "AUDIT",
+        "id": event_id, "boardId": board_id, "actorId": actor_id, "action": action,
+        "targetType": target_type, "targetId": target_id, "createdAt": now,
+    })
+
+
+def list_board_members(args: dict, user_id: str, organisation_admin: bool) -> list[dict]:
+    _require_board_role(args["boardId"], user_id, organisation_admin=organisation_admin)
+    board = _get_board(args["boardId"])
+    members = table.query(
+        KeyConditionExpression=Key("PK").eq(f"BOARD#{args['boardId']}") & Key("SK").begins_with("MEMBER#")
+    ).get("Items", [])
+    return [{"boardId": args["boardId"], "userId": board["createdBy"], "role": "OWNER"}] + [_public(item) for item in members]
+
+
+def remove_board_member(args: dict, user_id: str, organisation_admin: bool) -> bool:
+    _require_board_role(args["boardId"], user_id, owner_only=True, organisation_admin=organisation_admin)
+    if _get_board(args["boardId"])["createdBy"] == args["userId"]:
+        raise ValueError("The board owner cannot be removed")
+    table.delete_item(Key={"PK": f"BOARD#{args['boardId']}", "SK": f"MEMBER#{args['userId']}"})
+    _audit(args["boardId"], user_id, "MEMBER_REMOVED", "MEMBER", args["userId"])
+    return True
+
+
+def list_moderation_events(args: dict, user_id: str, organisation_admin: bool) -> list[dict]:
+    _require_board_role(args["boardId"], user_id, organisation_admin=organisation_admin)
+    result = table.query(
+        KeyConditionExpression=Key("PK").eq(f"BOARD#{args['boardId']}") & Key("SK").begins_with("AUDIT#"),
+        ScanIndexForward=False, Limit=min(args.get("limit") or 50, 100),
+    )
+    return [_public(item) for item in result.get("Items", [])]
+
+
 def create_board(args: dict, user_id: str, authenticated: bool, organisation_admin: bool) -> dict:
     if not authenticated:
         raise PermissionError("Sign in to create a board")
@@ -256,6 +306,7 @@ def update_question(args: dict, user_id: str, organisation_admin: bool) -> dict:
     values[":updatedAt"] = _now()
     assignments.append("#updatedAt = :updatedAt")
     result = table.update_item(Key={"PK": question["PK"], "SK": question["SK"]}, UpdateExpression="SET " + ", ".join(assignments), ExpressionAttributeNames=names, ExpressionAttributeValues=values, ReturnValues="ALL_NEW")
+    _audit(data["boardId"], user_id, "QUESTION_UPDATED", "QUESTION", data["questionId"])
     return _public(result["Attributes"])
 
 
@@ -267,6 +318,7 @@ def delete_question(args: dict, user_id: str, organisation_admin: bool) -> dict:
     with table.batch_writer() as batch:
         for vote in votes:
             batch.delete_item(Key={"PK": vote["PK"], "SK": vote["SK"]})
+    _audit(args["boardId"], user_id, "QUESTION_DELETED", "QUESTION", args["questionId"])
     return {**_public(question), "deleted": True, "updatedAt": _now()}
 
 
@@ -357,6 +409,7 @@ def set_comment_visibility(args: dict, user_id: str, organisation_admin: bool) -
         UpdateExpression="SET comments = :comments, updatedAt = :now",
         ExpressionAttributeValues={":comments": comments, ":now": _now()},
     )
+    _audit(args["boardId"], user_id, "COMMENT_HIDDEN" if args["hidden"] else "COMMENT_RESTORED", "COMMENT", args["commentId"])
     return _public(comment)
 
 
@@ -371,6 +424,7 @@ def assign_moderator(args: dict, user_id: str) -> dict:
     _require_board_role(args["boardId"], user_id, owner_only=True)
     item = {"PK": f"BOARD#{args['boardId']}", "SK": f"MEMBER#{args['userId']}", "entity": "MEMBER", "boardId": args["boardId"], "userId": args["userId"], "role": "MODERATOR"}
     table.put_item(Item=item)
+    _audit(args["boardId"], user_id, "MODERATOR_ASSIGNED", "MEMBER", args["userId"])
     return _public(item)
 
 
@@ -383,8 +437,9 @@ def invite_user(args: dict, user_id: str, organisation_admin: bool) -> dict:
         DesiredDeliveryMediums=["EMAIL"],
     )
     invited_user_id = response["User"]["Username"]
-    item = {"PK": f"BOARD#{args['boardId']}", "SK": f"MEMBER#{invited_user_id}", "entity": "MEMBER", "boardId": args["boardId"], "userId": invited_user_id, "role": "MODERATOR"}
+    item = {"PK": f"BOARD#{args['boardId']}", "SK": f"MEMBER#{invited_user_id}", "entity": "MEMBER", "boardId": args["boardId"], "userId": invited_user_id, "email": args["email"], "role": "MODERATOR"}
     table.put_item(Item=item)
+    _audit(args["boardId"], user_id, "MODERATOR_INVITED", "MEMBER", invited_user_id)
     return _public(item)
 
 
@@ -399,6 +454,9 @@ def handler(event: dict, _context: object) -> dict:
     organisation_admin = "Admins" in groups
     handlers = {
         "getBoard": lambda: get_board(args), "listBoards": list_boards, "listQuestions": lambda: list_questions(args, user_id, organisation_admin),
+        "listBoardMembers": lambda: list_board_members(args, user_id, organisation_admin),
+        "getMyBoardAccess": lambda: _board_access(args["boardId"], user_id, organisation_admin),
+        "listModerationEvents": lambda: list_moderation_events(args, user_id, organisation_admin),
         "getOrganizationSettings": get_organisation_settings, "getMySettings": lambda: get_my_settings(user_id),
         "createBoard": lambda: create_board(args, user_id, authenticated, organisation_admin),
         "updateBoard": lambda: update_board(args, user_id, organisation_admin),
@@ -412,6 +470,7 @@ def handler(event: dict, _context: object) -> dict:
         "selectQuestion": lambda: select_question(args, user_id, organisation_admin),
         "assignModerator": lambda: assign_moderator(args, user_id),
         "inviteUser": lambda: invite_user(args, user_id, organisation_admin),
+        "removeBoardMember": lambda: remove_board_member(args, user_id, organisation_admin),
         "updateOrganizationSettings": lambda: update_organisation_settings(args, organisation_admin),
         "updateMySettings": lambda: update_my_settings(args, user_id),
     }

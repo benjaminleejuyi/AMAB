@@ -10,8 +10,12 @@ describe('AMA board', () => {
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async (_url: string, options: RequestInit) => {
       const query = JSON.parse(String(options.body)).query as string
       const question = { id: 'q1', boardId: 'all-company', body: 'What should we focus on?', authorDisplayName: 'Helpful Heron', category: 'Strategy', status: 'OPEN', upvotes: 4, downvotes: 0, comments: [{ id: 'c1', boardId: 'all-company', questionId: 'q1', authorDisplayName: 'Curious Otter', body: 'Please share the timeline.', createdAt: new Date().toISOString(), hidden: false }], createdAt: new Date().toISOString() }
-      const data = query.includes('query Board') ? { getBoard: { id: 'all-company', title: 'Ask the leadership team', description: 'Demo', visibility: 'PUBLIC', postingPolicy: 'ANYONE', votingMode: 'UP_DOWN', commentsEnabled: true, visibleVoteTotals: true, anonymousPosting: true, categories: ['Strategy', 'Product'] } }
-        : query.includes('query Questions') ? { listQuestions: { items: [question] } }
+      const data = query.includes('query Board(') ? { getBoard: { id: 'all-company', title: 'Ask the leadership team', description: 'Demo', visibility: 'PUBLIC', postingPolicy: 'ANYONE', votingMode: 'UP_DOWN', commentsEnabled: true, visibleVoteTotals: true, anonymousPosting: true, categories: ['Strategy', 'Product'] } }
+        : query.includes('query BoardAccess') ? { getMyBoardAccess: { role: 'OWNER', canEditBoard: true, canModerateQuestions: true, canModerateComments: true, canPresent: true, canDeleteBoard: true } }
+          : query.includes('query BoardMembers') ? { listBoardMembers: [{ boardId: 'all-company', userId: 'owner-1', email: 'admin@example.com', role: 'OWNER' }, { boardId: 'all-company', userId: 'moderator-1', email: 'moderator@example.com', role: 'MODERATOR' }] }
+            : query.includes('query ModerationEvents') ? { listModerationEvents: [{ id: 'audit-1', boardId: 'all-company', actorId: 'owner-1', action: 'COMMENT_HIDDEN', targetType: 'COMMENT', targetId: 'c1', createdAt: new Date().toISOString() }] }
+              : query.includes('mutation RemoveBoardMember') ? { removeBoardMember: true }
+            : query.includes('query Questions') ? { listQuestions: { items: [question] } }
           : query.includes('mutation Post') ? { createQuestion: { ...question, id: 'new-question', body: JSON.parse(String(options.body)).variables.input.body } }
             : query.includes('mutation UpdateQuestion') ? { updateQuestion: { ...question, ...JSON.parse(String(options.body)).variables.input, status: JSON.parse(String(options.body)).variables.input.status || question.status, rank: new Date().toISOString() } }
               : query.includes('mutation ModerateComment') ? { setCommentVisibility: { id: 'c1', boardId: 'all-company', questionId: 'q1', hidden: JSON.parse(String(options.body)).variables.hidden } }
@@ -71,17 +75,22 @@ describe('AMA board', () => {
     await waitFor(() => expect(window.location.pathname).toBe('/admin'))
   })
 
-  it('opens settings for an authenticated administrator', () => {
+  it('opens settings for an authenticated administrator', async () => {
     window.history.replaceState({}, '', '/boards/real-board')
     sessionStorage.setItem('ama-board-session', JSON.stringify({ accessToken: 'access', idToken, email: 'admin@example.com', groups: ['Admins'] }))
     render(<App />)
-    fireEvent.click(screen.getByRole('button', { name: /board settings/i }))
+    fireEvent.click(await screen.findByRole('button', { name: /board settings/i }))
     expect(screen.getByRole('heading', { name: /board settings/i })).toBeInTheDocument()
     expect(window.location.pathname).toBe('/boards/real-board/settings')
     fireEvent.click(screen.getByRole('button', { name: 'Participation' }))
     expect(screen.getByRole('heading', { name: /access and participation/i })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Moderators' }))
-    expect(screen.getByRole('heading', { name: /board moderators/i })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: /board members/i })).toBeInTheDocument()
+    expect(await screen.findByText('moderator@example.com')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
+    await waitFor(() => expect(screen.queryByText('moderator@example.com')).not.toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'Activity' }))
+    expect(await screen.findByText('comment hidden')).toBeInTheDocument()
   })
 
   it('allows an administrator to edit a persisted question', async () => {
@@ -161,7 +170,9 @@ describe('AMA board', () => {
       const data = query.includes('ListBoards') ? { listBoards: [] }
         : query.includes('query Org') ? { getOrganizationSettings: { organizationName: 'Anyhow Only', defaultVisibility: 'UNLISTED', defaultVotingMode: 'UP_DOWN', membersCanCreateBoards: false } }
           : query.includes('CreateBoard') ? { createBoard: { id: 'new-board', title: 'Product AMA' } }
-            : query.includes('query Board') ? { getBoard: { id: 'new-board', title: 'Product AMA', description: '', visibility: 'UNLISTED', postingPolicy: 'ANYONE', votingMode: 'UP_DOWN', commentsEnabled: true, visibleVoteTotals: true, anonymousPosting: true, categories: ['General'] } }
+            : query.includes('query Board(') ? { getBoard: { id: 'new-board', title: 'Product AMA', description: '', visibility: 'UNLISTED', postingPolicy: 'ANYONE', votingMode: 'UP_DOWN', commentsEnabled: true, visibleVoteTotals: true, anonymousPosting: true, categories: ['General'] } }
+              : query.includes('query BoardMembers') ? { listBoardMembers: [] }
+                : query.includes('query ModerationEvents') ? { listModerationEvents: [] }
               : {}
       return { ok: true, json: async () => ({ data }) }
     }))

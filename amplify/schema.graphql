@@ -40,7 +40,9 @@ type Question @aws_cognito_user_pools @aws_api_key {
 
 type Comment { id: ID!, boardId: ID, questionId: ID!, body: String!, authorDisplayName: String!, createdAt: AWSDateTime!, hidden: Boolean }
 type QuestionConnection { items: [Question!]!, nextToken: String }
-type BoardMember { boardId: ID!, userId: ID!, role: BoardRole! }
+type BoardMember { boardId: ID!, userId: ID!, email: AWSEmail, role: BoardRole! }
+type BoardAccess { role: BoardRole, canEditBoard: Boolean!, canModerateQuestions: Boolean!, canModerateComments: Boolean!, canPresent: Boolean!, canDeleteBoard: Boolean! }
+type ModerationEvent { id: ID!, boardId: ID!, actorId: ID!, action: String!, targetType: String!, targetId: ID!, createdAt: AWSDateTime! }
 type OrganizationSettings { organizationName: String!, defaultVisibility: BoardVisibility!, defaultVotingMode: VotingMode!, membersCanCreateBoards: Boolean!, updatedAt: AWSDateTime }
 type UserSettings { userId: ID!, defaultIdentity: String!, updatedAt: AWSDateTime }
 
@@ -67,6 +69,7 @@ type Mutation {
   selectQuestion(boardId: ID!, questionId: ID): Board! @aws_cognito_user_pools
   assignModerator(boardId: ID!, userId: ID!): BoardMember! @aws_cognito_user_pools
   inviteUser(boardId: ID!, email: AWSEmail!): BoardMember! @aws_cognito_user_pools
+  removeBoardMember(boardId: ID!, userId: ID!): Boolean! @aws_cognito_user_pools
   updateOrganizationSettings(input: UpdateOrganizationSettingsInput!): OrganizationSettings! @aws_cognito_user_pools
   updateMySettings(input: UpdateUserSettingsInput!): UserSettings! @aws_cognito_user_pools
 }
@@ -77,6 +80,9 @@ type Query {
   getOrganizationSettings: OrganizationSettings! @aws_cognito_user_pools
   getMySettings: UserSettings! @aws_cognito_user_pools
   listQuestions(boardId: ID!, limit: Int): QuestionConnection! @aws_cognito_user_pools @aws_api_key
+  listBoardMembers(boardId: ID!): [BoardMember!]! @aws_cognito_user_pools
+  getMyBoardAccess(boardId: ID!): BoardAccess! @aws_cognito_user_pools
+  listModerationEvents(boardId: ID!, limit: Int): [ModerationEvent!]! @aws_cognito_user_pools
 }
 
 type Subscription {
