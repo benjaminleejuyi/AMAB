@@ -11,11 +11,11 @@ npm install
 npm run dev
 ```
 
-The current frontend is an interactive prototype backed by local React state. `amplify/schema.graphql` defines the AWS AppSync contract, while `infrastructure/template.yaml` provisions its deployable backend and hosting infrastructure.
+The frontend sends state-changing actions through AppSync and reloads saved board data from DynamoDB. `amplify/schema.graphql` defines the AWS AppSync contract, while `infrastructure/template.yaml` provisions its deployable backend and hosting infrastructure.
 
 ## AWS target
 
-- Amplify Hosting for the React application
+- S3 and CloudFront for the React application
 - Cognito User Pools for organization admins, board owners, and delegated moderators
 - AppSync GraphQL subscriptions for live board and presentation updates
 - Lambda resolvers for authorization, pseudonym assignment, vote transactions, and moderation
@@ -23,6 +23,10 @@ The current frontend is an interactive prototype backed by local React state. `a
 - CloudWatch and AWS Budgets for observability and cost controls
 
 Public and unlisted boards are in scope. Private boards, multi-organization tenancy, file attachments, and comment pre-moderation are intentionally excluded from the first MVP.
+
+### Persisted application state
+
+DynamoDB stores boards and board settings, questions, comments, per-participant votes, the selected presentation question, moderator memberships, organisation defaults, and each signed-in user's posting-identity preference. Local React state only reflects AppSync responses, so refreshing a board reloads its questions and comments from DynamoDB instead of fixture data.
 
 ## Deploy to AWS
 
@@ -57,6 +61,8 @@ The deployment generates the browser's Cognito and AppSync configuration from Cl
 Authenticated users keep their account identity in the top-right menu. Organization administrators receive an **Admin panel** entry inside that menu and an **Administration** tab in personal settings; regular members do not. Administrators use `/admin` for organization-wide users, board creation, and defaults, while board-specific controls remain under `/boards/<board-id>/settings`. Participant totals are not fabricated when analytics have not been connected.
 
 The script discovers the Route 53 zone for `anyhowonly.com`, builds the frontend, deploys a small certificate stack in `us-east-1`, and deploys the main SAM/CloudFormation application stack in `ap-southeast-1`. It then uploads `dist/` to the private S3 origin, invalidates CloudFront, and prints the application, AppSync, and Cognito outputs. The application URL is `https://ama.anyhowonly.com`.
+
+AWS CloudShell has limited persistent storage. The deployment script removes stale `dist/` and SAM build output before deployment, releases the packaged SAM output before building the frontend, and clears npm's download cache only when less than 512 MB remains. If CloudShell still reports `No space left on device`, inspect usage with `df -h` and `du -sh ~/* ~/.npm 2>/dev/null | sort -h` before rerunning the script.
 
 CloudFront requires its ACM certificate to be in `us-east-1`, even when the application runs elsewhere. The separate `askboard-<environment>-certificate` stack satisfies that restriction while the main stack defaults to `ap-southeast-1`. Set `AWS_REGION` only if you want the main application stack in another region; it does not change the certificate region.
 

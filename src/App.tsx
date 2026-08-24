@@ -4,9 +4,8 @@ import {
   LayoutGrid, LockKeyhole, LogOut, MessageCircle, MoreHorizontal, Plus, Presentation, Search,
   Send, Settings, Share2, ShieldCheck, Sparkles, UserCog, Users, X,
 } from 'lucide-react'
-import { initialQuestions } from './data'
 import type { Question, QuestionCategory } from './types'
-import { completeNewPassword, createBoard, inviteUser, NewPasswordRequiredError, readSession, signIn, signOut, type AuthSession } from './auth'
+import { commentOnQuestion, completeNewPassword, createBoard, getBoard, getMySettings, getOrganizationSettings, getQuestions, inviteUser, listBoards, NewPasswordRequiredError, postQuestion, presentQuestion, readSession, saveBoard, saveMySettings, saveOrganizationSettings, signIn, signOut, voteQuestion, type AuthSession, type BoardSummary, type PersistedQuestion } from './auth'
 
 type SortMode = 'Top' | 'Newest' | 'Oldest'
 
@@ -78,7 +77,9 @@ function QuestionCard({ question, onVote, onPresent, onComment }: {
 }
 
 function BoardPage({ boardId, navigate, session }: { boardId: string, navigate: (path: string) => void, session: AuthSession | null }) {
-  const [questions, setQuestions] = useState(initialQuestions)
+  const [questions, setQuestions] = useState<Question[]>([])
+  const [boardTitle, setBoardTitle] = useState('Loading board…')
+  const [boardError, setBoardError] = useState('')
   const [category, setCategory] = useState<(typeof categories)[number]>('All')
   const [sort, setSort] = useState<SortMode>('Top')
   const [query, setQuery] = useState('')
@@ -87,8 +88,12 @@ function BoardPage({ boardId, navigate, session }: { boardId: string, navigate: 
   const [newCategory, setNewCategory] = useState<QuestionCategory>('Strategy')
   const [presenting, setPresenting] = useState<Question | null>(null)
   const [shareNotice, setShareNotice] = useState(false)
-  const boardTitle = boardId === 'all-company' ? 'Ask the leadership team' : boardId.split('-').map(word => word[0]?.toUpperCase() + word.slice(1)).join(' ')
   const initials = session?.email.slice(0, 2).toUpperCase() ?? 'GU'
+  const toQuestion = (item: PersistedQuestion, index = 0): Question => ({ id: item.id, author: item.authorDisplayName, avatar: item.authorDisplayName.split(' ').map(word => word[0]).join('').slice(0, 2), body: item.body, category: item.category as QuestionCategory, status: item.status === 'SELECTED' ? 'Selected' : item.status === 'ANSWERED' ? 'Answered' : 'Open', upvotes: item.upvotes, downvotes: item.downvotes, viewerVote: 0, comments: (item.comments || []).map(comment => ({ id: comment.id, author: comment.authorDisplayName, body: comment.body, time: new Date(comment.createdAt).toLocaleString() })), createdAt: Date.parse(item.createdAt) || index })
+  useEffect(() => {
+    const token = session?.idToken
+    Promise.all([getBoard(boardId, token), getQuestions(boardId, token)]).then(([board, items]) => { setBoardTitle(board.title); setQuestions(items.map(toQuestion)); setBoardError('') }).catch(reason => setBoardError(reason instanceof Error ? reason.message : 'Could not load this board.'))
+  }, [boardId, session?.idToken])
 
   const visibleQuestions = useMemo(() => questions
     .filter(item => category === 'All' || item.category === category)
@@ -96,36 +101,36 @@ function BoardPage({ boardId, navigate, session }: { boardId: string, navigate: 
     .sort((a, b) => sort === 'Top' ? (b.upvotes - b.downvotes) - (a.upvotes - a.downvotes) : sort === 'Newest' ? b.createdAt - a.createdAt : a.createdAt - b.createdAt),
   [questions, category, query, sort])
 
-  const vote = (id: string, nextVote: -1 | 1) => setQuestions(current => current.map(item => {
-    if (item.id !== id) return item
-    const voteValue = item.viewerVote === nextVote ? 0 : nextVote
-    return {
-      ...item,
-      upvotes: item.upvotes - (item.viewerVote === 1 ? 1 : 0) + (voteValue === 1 ? 1 : 0),
-      downvotes: item.downvotes - (item.viewerVote === -1 ? 1 : 0) + (voteValue === -1 ? 1 : 0),
-      viewerVote: voteValue,
-    }
-  }))
-
-  const addComment = (id: string, body: string) => setQuestions(current => current.map(item => item.id === id ? {
-    ...item, comments: [...item.comments, { id: crypto.randomUUID(), author: 'Helpful Heron', body, time: 'Just now' }],
-  } : item))
-
-  const submitQuestion = () => {
-    if (!newQuestion.trim()) return
-    setQuestions(current => [{
-      id: crypto.randomUUID(), author: 'Helpful Heron', avatar: 'HH', body: newQuestion.trim(), category: newCategory,
-      status: 'Open', upvotes: 1, downvotes: 0, viewerVote: 1, comments: [], createdAt: Date.now(),
-    }, ...current])
-    setNewQuestion('')
-    setComposerOpen(false)
+  const vote = async (id: string, nextVote: -1 | 1) => {
+    const currentQuestion = questions.find(item => item.id === id)
+    if (!currentQuestion) return
+    const voteValue = currentQuestion.viewerVote === nextVote ? 0 : nextVote
+    try {
+      const saved = await voteQuestion(boardId, id, voteValue, session?.idToken)
+      setQuestions(current => current.map(item => item.id === id ? { ...item, upvotes: saved.upvotes, downvotes: saved.downvotes, viewerVote: voteValue } : item))
+    } catch (reason) { setBoardError(reason instanceof Error ? reason.message : 'Could not save vote.') }
+  }
+  const addComment = async (id: string, body: string) => {
+    try {
+      const saved = await commentOnQuestion(boardId, id, body, session?.idToken)
+      setQuestions(current => current.map(item => item.id === id ? { ...item, comments: [...item.comments, { id: saved.id, author: saved.authorDisplayName, body: saved.body, time: 'Just now' }] } : item))
+    } catch (reason) { setBoardError(reason instanceof Error ? reason.message : 'Could not save comment.') }
   }
 
-  const startPresentation = (id: string) => {
+  const submitQuestion = async () => {
+    if (!newQuestion.trim()) return
+    try {
+      const saved = await postQuestion(boardId, newQuestion.trim(), newCategory, session?.idToken)
+      setQuestions(current => [toQuestion(saved), ...current]); setNewQuestion(''); setComposerOpen(false)
+    } catch (reason) { setBoardError(reason instanceof Error ? reason.message : 'Could not post question.'); setComposerOpen(false) }
+  }
+
+  const startPresentation = async (id: string) => {
     const selected = questions.find(item => item.id === id)
     if (!selected) return
-    setQuestions(current => current.map(item => ({ ...item, status: item.id === id ? 'Selected' : item.status === 'Selected' ? 'Open' : item.status })))
-    setPresenting(selected)
+    if (!session) { setBoardError('Sign in as a moderator to use presentation mode.'); return }
+    try { await presentQuestion(boardId, id, session.idToken); setQuestions(current => current.map(item => ({ ...item, status: item.id === id ? 'Selected' : item.status === 'Selected' ? 'Open' : item.status }))); setPresenting(selected) }
+    catch (reason) { setBoardError(reason instanceof Error ? reason.message : 'Could not select the question.') }
   }
 
   const shareBoard = async () => {
@@ -148,6 +153,7 @@ function BoardPage({ boardId, navigate, session }: { boardId: string, navigate: 
       </header>
 
       <main>
+        {boardError && <div className="page-error" role="alert">{boardError}</div>}
         <section className="hero">
           <div className="eyebrow"><span className="pulse" /> LIVE AMA · ALL COMPANY</div>
           <div className="hero-heading">
@@ -276,18 +282,32 @@ function SettingsPage({ boardId, navigate, session }: { boardId: string, navigat
   const [anonymous, setAnonymous] = useState(true)
   const [inviteEmail, setInviteEmail] = useState('')
   const [inviteStatus, setInviteStatus] = useState('')
+  const [title, setTitle] = useState('')
+  const [description, setDescription] = useState('')
+  const [visibility, setVisibility] = useState('UNLISTED')
+  const [votingMode, setVotingMode] = useState('UP_DOWN')
+  const [postingPolicy, setPostingPolicy] = useState('ANYONE')
+  const [showVotes, setShowVotes] = useState(true)
+  useEffect(() => {
+    getBoard(boardId, session.idToken).then(board => { setTitle(board.title); setDescription(board.description || ''); setVisibility(board.visibility); setVotingMode(board.votingMode); setPostingPolicy(board.postingPolicy); setComments(board.commentsEnabled); setShowVotes(board.visibleVoteTotals); setAnonymous(board.anonymousPosting) })
+  }, [boardId, session.idToken])
+  const persistBoard = async () => {
+    setSaved(false)
+    try { await saveBoard({ id: boardId, title, description, visibility, votingMode, postingPolicy, commentsEnabled: comments, visibleVoteTotals: showVotes, anonymousPosting: anonymous }, session.idToken); setSaved(true); window.setTimeout(() => setSaved(false), 2000) }
+    catch (reason) { setInviteStatus(reason instanceof Error ? reason.message : 'Could not save board settings.') }
+  }
   const sendInvite = async () => {
     setInviteStatus('Sending…')
     try { await inviteUser(boardId, inviteEmail, session.idToken); setInviteStatus(`Invitation sent to ${inviteEmail}`); setInviteEmail('') }
     catch (reason) { setInviteStatus(reason instanceof Error ? reason.message : 'Could not send invitation.') }
   }
   return <div className="settings-shell"><header><button className="brand brand-button" onClick={() => navigate('/')}><span><Sparkles size={20} /></span> AMA Board</button><button className="back-board" onClick={() => navigate(`/boards/${boardId}`)}>← Back to board</button><button className="profile profile-button" title={session.email} onClick={() => navigate('/admin')}>{session.email.slice(0, 2).toUpperCase()}</button></header>
-    <main className="settings-page"><div className="settings-title"><div><span>Board administration</span><h1>Board settings</h1><p>Control how people find and participate in this AMA.</p></div><button onClick={() => { setSaved(true); window.setTimeout(() => setSaved(false), 2000) }}>{saved ? <><Check size={17} /> Saved</> : 'Save changes'}</button></div>
+    <main className="settings-page"><div className="settings-title"><div><span>Board administration</span><h1>Board settings</h1><p>Control how people find and participate in this AMA.</p></div><button onClick={persistBoard}>{saved ? <><Check size={17} /> Saved</> : 'Save changes'}</button></div>
       <section className="settings-grid"><aside>{(['General', 'Participation', 'Moderators', 'Presentation'] as const).map(tab => <button key={tab} className={activeTab === tab ? 'active' : ''} onClick={() => setActiveTab(tab)}>{tab}</button>)}</aside><div className="settings-panels">
-        {activeTab === 'General' && <article><h2>Board details</h2><p>The information participants see at the top of this board.</p><label>Board title<input defaultValue="Ask the leadership team" /></label><label>Description<textarea defaultValue="Vote for what matters. We’ll answer the most important questions live." /></label><label>Board URL<input value={`/boards/${boardId}`} readOnly /></label></article>}
-        {activeTab === 'Participation' && <article><h2>Access and participation</h2><p>Choose how your organisation can take part.</p><label>Board visibility<select defaultValue="unlisted"><option value="public">Public</option><option value="unlisted">Unlisted — link only</option></select></label><label>Voting mode<select defaultValue="up-down"><option value="up-down">Upvotes and downvotes</option><option value="up">Upvotes only</option><option value="none">No voting</option></select></label><div className="setting-row"><div><b>Allow comments</b><span>Participants can comment without pre-moderation.</span></div><button className={`switch ${comments ? 'on' : ''}`} onClick={() => setComments(!comments)} aria-label="Allow comments"><i /></button></div><div className="setting-row"><div><b>Allow pseudonyms</b><span>Assign a friendly identity when no name is provided.</span></div><button className={`switch ${anonymous ? 'on' : ''}`} onClick={() => setAnonymous(!anonymous)} aria-label="Allow pseudonyms"><i /></button></div></article>}
+        {activeTab === 'General' && <article><h2>Board details</h2><p>The information participants see at the top of this board.</p><label>Board title<input value={title} onChange={event => setTitle(event.target.value)} /></label><label>Description<textarea value={description} onChange={event => setDescription(event.target.value)} /></label><label>Board URL<input value={`/boards/${boardId}`} readOnly /></label></article>}
+        {activeTab === 'Participation' && <article><h2>Access and participation</h2><p>Choose how your organisation can take part.</p><label>Board visibility<select value={visibility} onChange={event => setVisibility(event.target.value)}><option value="PUBLIC">Public</option><option value="UNLISTED">Unlisted — link only</option></select></label><label>Who can post<select value={postingPolicy} onChange={event => setPostingPolicy(event.target.value)}><option value="ANYONE">Anyone</option><option value="AUTHENTICATED">Signed-in users</option><option value="MODERATORS">Moderators only</option><option value="CLOSED">Closed</option></select></label><label>Voting mode<select value={votingMode} onChange={event => setVotingMode(event.target.value)}><option value="UP_DOWN">Upvotes and downvotes</option><option value="UPVOTE">Upvotes only</option><option value="NONE">No voting</option></select></label><div className="setting-row"><div><b>Allow comments</b><span>Participants can comment without pre-moderation.</span></div><button className={`switch ${comments ? 'on' : ''}`} onClick={() => setComments(!comments)} aria-label="Allow comments"><i /></button></div><div className="setting-row"><div><b>Allow pseudonyms</b><span>Assign a friendly identity when no name is provided.</span></div><button className={`switch ${anonymous ? 'on' : ''}`} onClick={() => setAnonymous(!anonymous)} aria-label="Allow pseudonyms"><i /></button></div></article>}
         {activeTab === 'Moderators' && <article><h2>Board moderators</h2><p>Invite colleagues who can organise questions and control presentation mode.</p><div className="member-row"><span className="profile">{session.email.slice(0, 2).toUpperCase()}</span><div><b>{session.email}</b><small>Organisation administrator</small></div><strong>Admin</strong></div><div className="invite-row"><input type="email" value={inviteEmail} onChange={event => setInviteEmail(event.target.value)} placeholder="colleague@company.com" /><button disabled={!inviteEmail} onClick={sendInvite}>Send invitation</button></div>{inviteStatus && <p role="status">{inviteStatus}</p>}</article>}
-        {activeTab === 'Presentation' && <article><h2>Presentation preferences</h2><p>Choose what the audience sees when a question is presented.</p><label>Presentation heading<input defaultValue="All-company AMA" /></label><div className="setting-row"><div><b>Show vote totals</b><span>Display the selected question's live score.</span></div><button className="switch on" aria-label="Show vote totals"><i /></button></div><div className="setting-row"><div><b>Show question author</b><span>Include the name or pseudonym in presentation mode.</span></div><button className="switch on" aria-label="Show question author"><i /></button></div></article>}
+        {activeTab === 'Presentation' && <article><h2>Presentation preferences</h2><p>Choose what the audience sees when a question is presented.</p><label>Presentation heading<input value={title} onChange={event => setTitle(event.target.value)} /></label><div className="setting-row"><div><b>Show vote totals</b><span>Display the selected question's live score.</span></div><button className={`switch ${showVotes ? 'on' : ''}`} onClick={() => setShowVotes(!showVotes)} aria-label="Show vote totals"><i /></button></div></article>}
       </div></section>
     </main></div>
 }
@@ -295,18 +315,36 @@ function SettingsPage({ boardId, navigate, session }: { boardId: string, navigat
 function UserSettingsPage({ navigate, session, onSignOut }: { navigate: (path: string) => void, session: AuthSession, onSignOut: () => void }) {
   const tabs = session.groups.includes('Admins') ? ['Profile', 'Security', 'Administration'] as const : ['Profile', 'Security'] as const
   const [tab, setTab] = useState<'Profile' | 'Security' | 'Administration'>('Profile')
-  return <div className="settings-shell"><header><button className="brand brand-button" onClick={() => navigate('/')}><span><Sparkles size={20} /></span> AMA Board</button><button className="back-board" onClick={() => navigate('/')}>← Back home</button><AccountMenu session={session} navigate={navigate} onSignOut={onSignOut} /></header><main className="settings-page"><div className="settings-title"><div><span>Your account</span><h1>Settings</h1><p>Manage your profile and account access.</p></div></div><section className="settings-grid"><aside>{tabs.map(item => <button key={item} className={tab === item ? 'active' : ''} onClick={() => setTab(item)}>{item}</button>)}</aside><div className="settings-panels">{tab === 'Profile' && <article><h2>Profile</h2><p>This identity is provided by your organisation account.</p><label>Email<input value={session.email} readOnly /></label><label>Default posting identity<select defaultValue="ask"><option value="ask">Ask every time</option><option value="name">Use my name</option><option value="anonymous">Use a pseudonym</option></select></label></article>}{tab === 'Security' && <article><h2>Security</h2><p>Your password and authentication are managed securely by Amazon Cognito.</p><button className="danger-button" onClick={onSignOut}>Sign out of AMA Board</button></article>}{tab === 'Administration' && session.groups.includes('Admins') && <article><h2>Administration</h2><p>Manage organisation users, boards, and defaults in the administrator panel.</p><button className="page-cta" onClick={() => navigate('/admin')}>Open admin panel <ArrowRight size={17} /></button></article>}</div></section></main></div>
+  const [defaultIdentity, setDefaultIdentity] = useState('ASK')
+  const [profileStatus, setProfileStatus] = useState('')
+  useEffect(() => { getMySettings(session.idToken).then(settings => setDefaultIdentity(settings.defaultIdentity)).catch(reason => setProfileStatus(reason instanceof Error ? reason.message : 'Could not load profile settings.')) }, [session.idToken])
+  const persistProfile = async () => {
+    setProfileStatus('Saving…')
+    try { await saveMySettings(defaultIdentity, session.idToken); setProfileStatus('Profile settings saved.') }
+    catch (reason) { setProfileStatus(reason instanceof Error ? reason.message : 'Could not save profile settings.') }
+  }
+  return <div className="settings-shell"><header><button className="brand brand-button" onClick={() => navigate('/')}><span><Sparkles size={20} /></span> AMA Board</button><button className="back-board" onClick={() => navigate('/')}>← Back home</button><AccountMenu session={session} navigate={navigate} onSignOut={onSignOut} /></header><main className="settings-page"><div className="settings-title"><div><span>Your account</span><h1>Settings</h1><p>Manage your profile and account access.</p></div></div><section className="settings-grid"><aside>{tabs.map(item => <button key={item} className={tab === item ? 'active' : ''} onClick={() => setTab(item)}>{item}</button>)}</aside><div className="settings-panels">{tab === 'Profile' && <article><h2>Profile</h2><p>This identity is provided by your organisation account.</p><label>Email<input value={session.email} readOnly /></label><label>Default posting identity<select value={defaultIdentity} onChange={event => setDefaultIdentity(event.target.value)}><option value="ASK">Ask every time</option><option value="NAME">Use my name</option><option value="PSEUDONYM">Use a pseudonym</option></select></label><button className="page-cta" onClick={persistProfile}>Save profile</button>{profileStatus && <p role="status">{profileStatus}</p>}</article>}{tab === 'Security' && <article><h2>Security</h2><p>Your password and authentication are managed securely by Amazon Cognito.</p><button className="danger-button" onClick={onSignOut}>Sign out of AMA Board</button></article>}{tab === 'Administration' && session.groups.includes('Admins') && <article><h2>Administration</h2><p>Manage organisation users, boards, and defaults in the administrator panel.</p><button className="page-cta" onClick={() => navigate('/admin')}>Open admin panel <ArrowRight size={17} /></button></article>}</div></section></main></div>
 }
 
 function AdminPage({ navigate, session, onSignOut }: { navigate: (path: string) => void, session: AuthSession, onSignOut: () => void }) {
   const [tab, setTab] = useState<'Overview' | 'Boards' | 'Users' | 'Organisation'>('Overview')
   const [email, setEmail] = useState('')
   const [status, setStatus] = useState('')
-  const [boards, setBoards] = useState([{ id: 'all-company', title: 'Ask the leadership team' }])
+  const [boards, setBoards] = useState<BoardSummary[]>([])
+  const [boardsStatus, setBoardsStatus] = useState('Loading boards…')
   const [creating, setCreating] = useState(false)
   const [boardTitle, setBoardTitle] = useState('')
   const [boardDescription, setBoardDescription] = useState('')
   const [boardStatus, setBoardStatus] = useState('')
+  const [organizationName, setOrganizationName] = useState('')
+  const [defaultVisibility, setDefaultVisibility] = useState('UNLISTED')
+  const [defaultVotingMode, setDefaultVotingMode] = useState('UP_DOWN')
+  const [membersCanCreateBoards, setMembersCanCreateBoards] = useState(false)
+  const [organizationStatus, setOrganizationStatus] = useState('')
+  useEffect(() => {
+    listBoards(session.idToken).then(items => { setBoards(items); setBoardsStatus(items.length ? '' : 'No boards yet. Create your first board.') }).catch(reason => setBoardsStatus(reason instanceof Error ? reason.message : 'Could not load boards.'))
+    getOrganizationSettings(session.idToken).then(settings => { setOrganizationName(String(settings.organizationName)); setDefaultVisibility(String(settings.defaultVisibility)); setDefaultVotingMode(String(settings.defaultVotingMode)); setMembersCanCreateBoards(Boolean(settings.membersCanCreateBoards)) }).catch(reason => setOrganizationStatus(reason instanceof Error ? reason.message : 'Could not load organisation settings.'))
+  }, [session.idToken])
   const addUser = async () => {
     setStatus('Sending…')
     try { await inviteUser('all-company', email, session.idToken); setStatus(`Invitation sent to ${email}`); setEmail('') }
@@ -316,17 +354,22 @@ function AdminPage({ navigate, session, onSignOut }: { navigate: (path: string) 
     setBoardStatus('Creating…')
     try {
       const board = await createBoard(boardTitle, boardDescription, session.idToken)
-      setBoards(current => [...current, { id: board.id, title: board.title }]); setBoardTitle(''); setBoardDescription(''); setCreating(false); setBoardStatus('')
+      setBoards(current => [...current, board]); setBoardTitle(''); setBoardDescription(''); setCreating(false); setBoardStatus('')
       navigate(`/boards/${board.id}/settings`)
     } catch (reason) { setBoardStatus(reason instanceof Error ? reason.message : 'Could not create board.') }
+  }
+  const persistOrganization = async () => {
+    setOrganizationStatus('Saving…')
+    try { await saveOrganizationSettings({ organizationName, defaultVisibility, defaultVotingMode, membersCanCreateBoards }, session.idToken); setOrganizationStatus('Organisation settings saved.') }
+    catch (reason) { setOrganizationStatus(reason instanceof Error ? reason.message : 'Could not save organisation settings.') }
   }
   return <div className="settings-shell"><header><button className="brand brand-button" onClick={() => navigate('/')}><span><Sparkles size={20} /></span> AMA Board</button><span className="admin-label">Site administration</span><button className="logout-button" onClick={onSignOut}><LogOut size={16} /> Log out</button><span className="profile">{session.email.slice(0, 2).toUpperCase()}</span></header>
     <main className="settings-page"><div className="settings-title"><div><span>Organisation console</span><h1>Administration</h1><p>Manage boards, users, and site-wide defaults.</p></div><button onClick={() => { setTab('Boards'); setCreating(true) }}><Plus size={17} /> Create board</button></div>
       <section className="settings-grid"><aside>{(['Overview', 'Boards', 'Users', 'Organisation'] as const).map(item => <button key={item} className={tab === item ? 'active' : ''} onClick={() => setTab(item)}>{item}</button>)}</aside><div className="settings-panels">
-        {tab === 'Overview' && <><section className="admin-stats"><article><b>{boards.length}</b><span>Known boards</span></article><article><b>1</b><span>Administrator</span></article><article><b>—</b><span>Participant analytics not connected</span></article></section><article><h2>Welcome, {session.email}</h2><p>Use this console for organisation-wide administration. Settings for an individual AMA live on that board's settings page.</p></article></>}
-        {tab === 'Boards' && <article><h2>Boards</h2><p>Create a board or open an existing board's settings.</p>{creating && <div className="create-board-form"><label>Board title<input autoFocus value={boardTitle} onChange={event => setBoardTitle(event.target.value)} placeholder="e.g. Quarterly leadership AMA" /></label><label>Description<textarea value={boardDescription} onChange={event => setBoardDescription(event.target.value)} placeholder="What should participants know?" /></label><div><button onClick={() => setCreating(false)}>Cancel</button><button disabled={!boardTitle} onClick={addBoard}>Create board</button></div>{boardStatus && <p role="status">{boardStatus}</p>}</div>}{boards.map(board => <div className="board-admin-row" key={board.id}><div><b>{board.title}</b><span>Unlisted · accepting questions</span></div><button onClick={() => navigate(`/boards/${board.id}/settings`)}>Manage board</button></div>)}</article>}
+        {tab === 'Overview' && <><section className="admin-stats"><article><b>{boards.length}</b><span>Boards</span></article><article><b>1</b><span>Administrator</span></article><article><b>—</b><span>Participant analytics not connected</span></article></section><article><h2>Welcome, {session.email}</h2><p>Use this console for organisation-wide administration. Settings for an individual AMA live on that board's settings page.</p>{boardsStatus && <p role="status">{boardsStatus}</p>}</article></>}
+        {tab === 'Boards' && <article><h2>Boards</h2><p>Create a board or open an existing board's settings.</p>{creating && <div className="create-board-form"><label>Board title<input autoFocus value={boardTitle} onChange={event => setBoardTitle(event.target.value)} placeholder="e.g. Quarterly leadership AMA" /></label><label>Description<textarea value={boardDescription} onChange={event => setBoardDescription(event.target.value)} placeholder="What should participants know?" /></label><div><button onClick={() => setCreating(false)}>Cancel</button><button disabled={!boardTitle || boardStatus === 'Creating…'} onClick={addBoard}>Create board</button></div>{boardStatus && <p role="status">{boardStatus}</p>}</div>}{boardsStatus && <p role="status">{boardsStatus}</p>}{boards.map(board => <div className="board-admin-row" key={board.id}><div><b>{board.title}</b><span>{board.visibility.toLowerCase()} · accepting questions</span></div><button onClick={() => navigate(`/boards/${board.id}/settings`)}>Manage board</button></div>)}</article>}
         {tab === 'Users' && <article><h2>Users</h2><p>Invite a user through Cognito. They receive a temporary password by email.</p><div className="member-row"><span className="profile">{session.email.slice(0, 2).toUpperCase()}</span><div><b>{session.email}</b><small>Initial administrator</small></div><strong>Admin</strong></div><div className="invite-row"><input type="email" value={email} onChange={event => setEmail(event.target.value)} placeholder="new.user@company.com" /><button disabled={!email} onClick={addUser}>Invite user</button></div>{status && <p role="status">{status}</p>}</article>}
-        {tab === 'Organisation' && <article><h2>Organisation settings</h2><p>Defaults used when administrators create new AMA boards.</p><label>Organisation name<input defaultValue="Anyhow Only" /></label><label>Default board visibility<select defaultValue="unlisted"><option value="unlisted">Unlisted — link only</option><option value="public">Public</option></select></label><label>Default voting<select defaultValue="up-down"><option value="up-down">Upvotes and downvotes</option><option value="up">Upvotes only</option></select></label></article>}
+        {tab === 'Organisation' && <article><h2>Organisation settings</h2><p>Defaults used when administrators create new AMA boards.</p><label>Organisation name<input value={organizationName} onChange={event => setOrganizationName(event.target.value)} /></label><label>Default board visibility<select value={defaultVisibility} onChange={event => setDefaultVisibility(event.target.value)}><option value="UNLISTED">Unlisted — link only</option><option value="PUBLIC">Public</option></select></label><label>Default voting<select value={defaultVotingMode} onChange={event => setDefaultVotingMode(event.target.value)}><option value="UP_DOWN">Upvotes and downvotes</option><option value="UPVOTE">Upvotes only</option><option value="NONE">No voting</option></select></label><div className="setting-row"><div><b>Members can create boards</b><span>Allow non-administrators to create new AMA boards.</span></div><button className={`switch ${membersCanCreateBoards ? 'on' : ''}`} onClick={() => setMembersCanCreateBoards(!membersCanCreateBoards)} aria-label="Members can create boards"><i /></button></div><button className="page-cta" onClick={persistOrganization}>Save organisation settings</button>{organizationStatus && <p role="status">{organizationStatus}</p>}</article>}
       </div></section>
     </main></div>
 }

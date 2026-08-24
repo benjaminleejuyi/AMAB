@@ -19,6 +19,16 @@ command -v aws >/dev/null || { echo "AWS CLI is required and must be authenticat
 echo "Askboard deploy script ${SCRIPT_VERSION}"
 echo "Main stack region: ${DEPLOY_REGION}; CloudFront certificate region: ${CERTIFICATE_REGION}"
 
+# CloudShell has a small persistent home volume. Remove outputs from previous
+# deployments before installing or building so Vite and SAM do not compete for
+# space with stale artifacts.
+rm -rf dist .aws-sam/build
+AVAILABLE_KB="$(df -Pk . | awk 'NR==2 {print $4}')"
+if (( AVAILABLE_KB < 524288 )); then
+  echo "Less than 512 MB is available; clearing the npm download cache."
+  npm cache clean --force
+fi
+
 HOSTED_ZONE_ID="${HOSTED_ZONE_ID:-$(aws route53 list-hosted-zones-by-name \
   --dns-name "${HOSTED_ZONE_NAME}" \
   --query "HostedZones[?Name=='${HOSTED_ZONE_NAME}.']|[0].Id" \
@@ -67,6 +77,11 @@ sam deploy \
   --capabilities CAPABILITY_IAM \
   --parameter-overrides "Environment=${ENVIRONMENT}" "DomainName=${DOMAIN_NAME}" "HostedZoneId=${HOSTED_ZONE_ID}" "CertificateArn=${CERTIFICATE_ARN}" "ApiKeyExpiresEpoch=${EXPIRY}" "MonthlyBudgetUsd=${BUDGET_USD}" "AdminEmail=${ADMIN_EMAIL}" \
   --no-fail-on-empty-changeset
+
+# The packaged Lambda has already been uploaded by sam deploy. Its local build
+# directory is no longer needed and can prevent the frontend bundle being
+# written on storage-constrained CloudShell sessions.
+rm -rf .aws-sam/build
 
 BUCKET="$(aws cloudformation describe-stacks --region "${DEPLOY_REGION}" --stack-name "${STACK_NAME}" --query "Stacks[0].Outputs[?OutputKey=='WebBucketName'].OutputValue" --output text)"
 DISTRIBUTION="$(aws cloudformation describe-stacks --region "${DEPLOY_REGION}" --stack-name "${STACK_NAME}" --query "Stacks[0].Outputs[?OutputKey=='DistributionId'].OutputValue" --output text)"

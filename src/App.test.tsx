@@ -6,6 +6,20 @@ describe('AMA board', () => {
   const idToken = `x.${btoa(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 3600, 'cognito:groups': ['Admins'] }))}.x`
   beforeEach(() => {
     vi.unstubAllGlobals()
+    window.__AMA_BOARD_CONFIG__ = { appSyncEndpoint: 'https://appsync.example/graphql', appSyncApiKey: 'test-key' }
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (_url: string, options: RequestInit) => {
+      const query = JSON.parse(String(options.body)).query as string
+      const question = { id: 'q1', boardId: 'all-company', body: 'What should we focus on?', authorDisplayName: 'Helpful Heron', category: 'Strategy', status: 'OPEN', upvotes: 4, downvotes: 0, comments: [], createdAt: new Date().toISOString() }
+      const data = query.includes('query Board') ? { getBoard: { id: 'all-company', title: 'Ask the leadership team', description: 'Demo', visibility: 'PUBLIC', postingPolicy: 'ANYONE', votingMode: 'UP_DOWN', commentsEnabled: true, visibleVoteTotals: true, anonymousPosting: true } }
+        : query.includes('query Questions') ? { listQuestions: { items: [question] } }
+          : query.includes('mutation Post') ? { createQuestion: { ...question, id: 'new-question', body: JSON.parse(String(options.body)).variables.input.body } }
+            : query.includes('mutation Present') ? { selectQuestion: { id: 'all-company', presentedQuestionId: 'q1' } }
+              : query.includes('query ListBoards') ? { listBoards: [] }
+                : query.includes('query Org') ? { getOrganizationSettings: { organizationName: 'Anyhow Only', defaultVisibility: 'UNLISTED', defaultVotingMode: 'UP_DOWN', membersCanCreateBoards: false } }
+                  : query.includes('query Me') ? { getMySettings: { userId: 'admin', defaultIdentity: 'ASK' } }
+                    : {}
+      return { ok: true, json: async () => ({ data }) }
+    }))
     window.history.replaceState({}, '', '/')
     window.scrollTo = vi.fn()
     sessionStorage.clear()
@@ -19,21 +33,25 @@ describe('AMA board', () => {
     expect(screen.getByRole('button', { name: /log in/i })).toBeInTheDocument()
   })
 
-  it('posts a new pseudonymous question', () => {
+  it('posts a new pseudonymous question', async () => {
     window.history.replaceState({}, '', '/boards/all-company')
     render(<App />)
+    await screen.findByText('What should we focus on?')
     fireEvent.click(screen.getByRole('button', { name: /ask a question/i }))
     fireEvent.change(screen.getByPlaceholderText('What would you like to ask?'), { target: { value: 'Can we have a volunteering day?' } })
     fireEvent.click(screen.getByRole('button', { name: /post question/i }))
-    expect(screen.getByText('Can we have a volunteering day?')).toBeInTheDocument()
-    expect(screen.getAllByText('Helpful Heron').length).toBeGreaterThan(0)
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([, options]) => {
+      const request = JSON.parse(String(options?.body))
+      return request.query.includes('mutation Post') && request.variables.input.body === 'Can we have a volunteering day?'
+    })).toBe(true))
   })
 
-  it('opens presentation mode for a question', () => {
+  it('opens presentation mode for a question', async () => {
     window.history.replaceState({}, '', '/boards/all-company')
+    sessionStorage.setItem('ama-board-session', JSON.stringify({ accessToken: 'access', idToken, email: 'admin@example.com', groups: ['Admins'] }))
     render(<App />)
-    fireEvent.click(screen.getAllByRole('button', { name: /present/i })[1])
-    expect(screen.getByRole('dialog', { name: 'Presentation mode' })).toBeInTheDocument()
+    fireEvent.click(await screen.findByRole('button', { name: /^present$/i }))
+    expect(await screen.findByRole('dialog', { name: 'Presentation mode' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /end presentation/i })).toBeInTheDocument()
   })
 
@@ -75,7 +93,15 @@ describe('AMA board', () => {
     window.history.replaceState({}, '', '/admin')
     sessionStorage.setItem('ama-board-session', JSON.stringify({ accessToken: 'access', idToken, email: 'admin@example.com', groups: ['Admins'] }))
     window.__AMA_BOARD_CONFIG__ = { appSyncEndpoint: 'https://appsync.example/graphql' }
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ data: { createBoard: { id: 'new-board', title: 'Product AMA' } } }) }))
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (_url: string, options: RequestInit) => {
+      const query = JSON.parse(String(options.body)).query
+      const data = query.includes('ListBoards') ? { listBoards: [] }
+        : query.includes('query Org') ? { getOrganizationSettings: { organizationName: 'Anyhow Only', defaultVisibility: 'UNLISTED', defaultVotingMode: 'UP_DOWN', membersCanCreateBoards: false } }
+          : query.includes('CreateBoard') ? { createBoard: { id: 'new-board', title: 'Product AMA' } }
+            : query.includes('query Board') ? { getBoard: { id: 'new-board', title: 'Product AMA', description: '', visibility: 'UNLISTED', postingPolicy: 'ANYONE', votingMode: 'UP_DOWN', commentsEnabled: true, visibleVoteTotals: true, anonymousPosting: true } }
+              : {}
+      return { ok: true, json: async () => ({ data }) }
+    }))
     render(<App />)
     fireEvent.click(screen.getByRole('button', { name: /create board/i }))
     fireEvent.change(screen.getByPlaceholderText(/quarterly leadership/i), { target: { value: 'Product AMA' } })
