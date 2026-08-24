@@ -25,7 +25,7 @@ describe('AppSync realtime client', () => {
   it('connects, registers all board subscriptions, and dispatches events', async () => {
     const question = vi.fn()
     const status = vi.fn()
-    const dispose = subscribeToBoard('board-1', async () => undefined, { question, comment: vi.fn(), presentation: vi.fn(), reordered: vi.fn(), status, resync: vi.fn() })
+    const dispose = subscribeToBoard('board-1', async () => undefined, { question, comment: vi.fn(), commentModerated: vi.fn(), presentation: vi.fn(), reordered: vi.fn(), status, resync: vi.fn() })
     await vi.waitFor(() => expect(MockWebSocket.instances).toHaveLength(1))
     const socket = MockWebSocket.instances[0]
     expect(socket.url).toContain('appsync-realtime-api')
@@ -38,7 +38,7 @@ describe('AppSync realtime client', () => {
     socket.onopen?.()
     expect(JSON.parse(socket.sent[0])).toEqual({ type: 'connection_init' })
     socket.onmessage?.({ data: JSON.stringify({ type: 'connection_ack' }) })
-    expect(socket.sent.filter(message => JSON.parse(message).type === 'start')).toHaveLength(4)
+    expect(socket.sent.filter(message => JSON.parse(message).type === 'start')).toHaveLength(5)
     socket.onmessage?.({ data: JSON.stringify({ type: 'data', payload: { data: { questionChanged: { id: 'q1', boardId: 'board-1' } } } }) })
     expect(question).toHaveBeenCalledWith({ id: 'q1', boardId: 'board-1' })
     expect(status).toHaveBeenCalledWith('connected')
@@ -48,7 +48,7 @@ describe('AppSync realtime client', () => {
   it('reports an AppSync handshake rejection instead of silently waiting for an acknowledgement', async () => {
     const status = vi.fn()
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
-    const dispose = subscribeToBoard('board-1', async () => undefined, { question: vi.fn(), comment: vi.fn(), presentation: vi.fn(), reordered: vi.fn(), status, resync: vi.fn() })
+    const dispose = subscribeToBoard('board-1', async () => undefined, { question: vi.fn(), comment: vi.fn(), commentModerated: vi.fn(), presentation: vi.fn(), reordered: vi.fn(), status, resync: vi.fn() })
     await vi.waitFor(() => expect(MockWebSocket.instances).toHaveLength(1))
     const socket = MockWebSocket.instances[0]
     socket.onmessage?.({ data: JSON.stringify({ type: 'connection_error', payload: { errors: [{ message: 'Request headers are invalid' }] } }) })

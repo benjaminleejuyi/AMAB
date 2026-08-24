@@ -285,13 +285,22 @@ def reorder_questions(args: dict, user_id: str, organisation_admin: bool) -> lis
     return ordered
 
 
-def list_questions(args: dict) -> dict:
+def list_questions(args: dict, user_id: str, organisation_admin: bool) -> dict:
     board_id, limit = args["boardId"], min(args.get("limit") or 100, 100)
     result = table.query(
         KeyConditionExpression=Key("PK").eq(f"BOARD#{board_id}") & Key("SK").begins_with("QUESTION#"),
         Limit=limit, ScanIndexForward=False,
     )
+    can_moderate = organisation_admin
+    if not can_moderate:
+        try:
+            _require_board_role(board_id, user_id)
+            can_moderate = True
+        except PermissionError:
+            pass
     items = [_public(_migrate_legacy_pseudonyms(item)) for item in result.get("Items", [])]
+    if not can_moderate:
+        items = [{**item, "comments": [comment for comment in item.get("comments", []) if not comment.get("hidden", False)]} for item in items]
     return {"items": sorted(items, key=lambda item: item.get("rank", item["createdAt"])), "nextToken": None}
 
 
@@ -330,9 +339,25 @@ def add_comment(args: dict, participant_id: str) -> dict:
     if not board["commentsEnabled"]:
         raise PermissionError("Comments are disabled")
     question = _find_question(data["boardId"], data["questionId"])
-    comment = {"id": str(uuid.uuid4()), "boardId": data["boardId"], "questionId": data["questionId"], "body": data["body"], "authorDisplayName": _pseudonym(participant_id), "createdAt": now}
+    comment = {"id": str(uuid.uuid4()), "boardId": data["boardId"], "questionId": data["questionId"], "body": data["body"], "authorDisplayName": _pseudonym(participant_id), "createdAt": now, "hidden": False}
     table.update_item(Key={"PK": question["PK"], "SK": question["SK"]}, UpdateExpression="SET comments = list_append(if_not_exists(comments, :empty), :comment), updatedAt = :now", ExpressionAttributeValues={":empty": [], ":comment": [comment], ":now": now})
     return comment
+
+
+def set_comment_visibility(args: dict, user_id: str, organisation_admin: bool) -> dict:
+    _require_board_role(args["boardId"], user_id, organisation_admin=organisation_admin)
+    question = _find_question(args["boardId"], args["questionId"])
+    comments = question.get("comments", [])
+    comment = next((item for item in comments if item["id"] == args["commentId"]), None)
+    if not comment:
+        raise ValueError("Comment not found")
+    comment["hidden"] = bool(args["hidden"])
+    table.update_item(
+        Key={"PK": question["PK"], "SK": question["SK"]},
+        UpdateExpression="SET comments = :comments, updatedAt = :now",
+        ExpressionAttributeValues={":comments": comments, ":now": _now()},
+    )
+    return _public(comment)
 
 
 def select_question(args: dict, user_id: str, organisation_admin: bool) -> dict:
@@ -373,13 +398,14 @@ def handler(event: dict, _context: object) -> dict:
         groups = [groups]
     organisation_admin = "Admins" in groups
     handlers = {
-        "getBoard": lambda: get_board(args), "listBoards": list_boards, "listQuestions": lambda: list_questions(args),
+        "getBoard": lambda: get_board(args), "listBoards": list_boards, "listQuestions": lambda: list_questions(args, user_id, organisation_admin),
         "getOrganizationSettings": get_organisation_settings, "getMySettings": lambda: get_my_settings(user_id),
         "createBoard": lambda: create_board(args, user_id, authenticated, organisation_admin),
         "updateBoard": lambda: update_board(args, user_id, organisation_admin),
         "deleteBoard": lambda: delete_board(args, user_id, organisation_admin),
         "createQuestion": lambda: create_question(args, user_id, authenticated, organisation_admin),
         "castVote": lambda: cast_vote(args, user_id), "addComment": lambda: add_comment(args, user_id),
+        "setCommentVisibility": lambda: set_comment_visibility(args, user_id, organisation_admin),
         "updateQuestion": lambda: update_question(args, user_id, organisation_admin),
         "deleteQuestion": lambda: delete_question(args, user_id, organisation_admin),
         "reorderQuestions": lambda: reorder_questions(args, user_id, organisation_admin),

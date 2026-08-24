@@ -5,19 +5,20 @@ import {
   Pencil, Send, Settings, Share2, ShieldCheck, Sparkles, Trash2, UserCog, Wifi, WifiOff, X,
 } from 'lucide-react'
 import type { Question, QuestionCategory } from './types'
-import { activeIdToken, commentOnQuestion, completeNewPassword, createBoard, deleteBoard, deleteQuestion, getBoard, getMySettings, getOrganizationSettings, getQuestions, inviteUser, listBoards, NewPasswordRequiredError, postQuestion, presentQuestion, readSession, reorderQuestions, saveBoard, saveMySettings, saveOrganizationSettings, signIn, signOut, subscribeToBoard, updateQuestion, voteQuestion, type AuthSession, type BoardSummary, type PersistedQuestion, type RealtimeStatus } from './auth'
+import { activeIdToken, commentOnQuestion, completeNewPassword, createBoard, deleteBoard, deleteQuestion, getBoard, getMySettings, getOrganizationSettings, getQuestions, inviteUser, listBoards, NewPasswordRequiredError, postQuestion, presentQuestion, readSession, reorderQuestions, saveBoard, saveMySettings, saveOrganizationSettings, setCommentVisibility, signIn, signOut, subscribeToBoard, updateQuestion, voteQuestion, type AuthSession, type BoardSummary, type PersistedQuestion, type RealtimeStatus } from './auth'
 import { demoBoard, getDemoPseudonym, readDemoQuestions, resetDemoQuestions, writeDemoQuestions } from './demo'
 
 type SortMode = 'Manual' | 'Top' | 'Newest' | 'Oldest'
-type QuestionView = 'Active' | 'Unanswered' | 'Archived'
+type QuestionView = 'Active' | 'Answered' | 'Archived'
 
-const fromPersistedQuestion = (item: PersistedQuestion, index = 0): Question => ({ id: item.id, author: item.authorDisplayName, avatar: item.authorDisplayName.split(' ').map(word => word[0]).join('').slice(0, 2), body: item.body, category: item.category as QuestionCategory, status: item.status === 'SELECTED' ? 'Selected' : item.status === 'ANSWERED' ? 'Answered' : item.status === 'ARCHIVED' ? 'Archived' : 'Open', rank: item.rank, upvotes: item.upvotes, downvotes: item.downvotes, viewerVote: 0, comments: (item.comments || []).map(comment => ({ id: comment.id, author: comment.authorDisplayName, body: comment.body, time: new Date(comment.createdAt).toLocaleString() })), createdAt: Date.parse(item.createdAt) || index })
+const fromPersistedQuestion = (item: PersistedQuestion, index = 0): Question => ({ id: item.id, author: item.authorDisplayName, avatar: item.authorDisplayName.split(' ').map(word => word[0]).join('').slice(0, 2), body: item.body, category: item.category as QuestionCategory, status: item.status === 'SELECTED' ? 'Selected' : item.status === 'ANSWERED' ? 'Answered' : item.status === 'ARCHIVED' ? 'Archived' : 'Open', rank: item.rank, upvotes: item.upvotes, downvotes: item.downvotes, viewerVote: 0, comments: (item.comments || []).map(comment => ({ id: comment.id, author: comment.authorDisplayName, body: comment.body, time: new Date(comment.createdAt).toLocaleString(), hidden: comment.hidden })), createdAt: Date.parse(item.createdAt) || index })
 
-function QuestionCard({ question, onVote, onPresent, onComment, onAdmin, votingMode = 'UP_DOWN', commentsEnabled = true, canPresent = false, canManage = false, visibleVoteTotals = true }: {
+function QuestionCard({ question, onVote, onPresent, onComment, onModerateComment, onAdmin, votingMode = 'UP_DOWN', commentsEnabled = true, canPresent = false, canManage = false, visibleVoteTotals = true }: {
   question: Question
   onVote: (id: string, vote: -1 | 1) => void
   onPresent: (id: string) => void
   onComment: (id: string, body: string) => void
+  onModerateComment: (questionId: string, commentId: string, hidden: boolean) => void
   onAdmin: (id: string, action: 'edit' | 'answer' | 'archive' | 'delete' | 'up' | 'down') => void
   votingMode?: string
   commentsEnabled?: boolean
@@ -77,10 +78,11 @@ function QuestionCard({ question, onVote, onPresent, onComment, onAdmin, votingM
 
       {commentsOpen && (
         <div className="comments">
-          {question.comments.map(item => (
-            <div className="comment" key={item.id}>
+          {question.comments.filter(item => canManage || !item.hidden).map(item => (
+            <div className={`comment ${item.hidden ? 'hidden-comment' : ''}`} key={item.id}>
               <span className="mini-avatar">{item.author.split(' ').map(word => word[0]).join('').slice(0, 2)}</span>
-              <div><b>{item.author}</b><span>{item.time}</span><p>{item.body}</p></div>
+              <div><b>{item.author}</b><span>{item.time}</span>{item.hidden && <span className="hidden-label">Hidden from participants</span>}<p>{item.body}</p></div>
+              {canManage && <button className="comment-moderation" onClick={() => onModerateComment(question.id, item.id, !item.hidden)}>{item.hidden ? 'Show' : 'Hide'}</button>}
             </div>
           ))}
           <div className="comment-box">
@@ -148,17 +150,17 @@ function BoardPage({ boardId, navigate, session }: { boardId: string, navigate: 
         if (changed.deleted) return current.filter(item => item.id !== changed.id)
         const next = fromPersistedQuestion(changed)
         const existing = current.find(item => item.id === next.id)
-        return existing ? current.map(item => item.id === next.id ? { ...next, viewerVote: item.viewerVote } : item) : [next, ...current]
+        return existing ? current.map(item => item.id === next.id ? { ...next, comments: changed.comments ? next.comments : item.comments, viewerVote: item.viewerVote } : item) : [next, ...current]
       }),
       comment: comment => setQuestions(current => current.map(question => question.id === comment.questionId && !question.comments.some(item => item.id === comment.id) ? { ...question, comments: [...question.comments, { id: comment.id, author: comment.authorDisplayName, body: comment.body, time: new Date(comment.createdAt).toLocaleString() }] } : question)),
+      commentModerated: comment => setQuestions(current => current.map(question => question.id === comment.questionId ? { ...question, comments: question.comments.map(item => item.id === comment.id ? { ...item, hidden: comment.hidden } : item) } : question)),
       presentation: () => { void resync() },
       reordered: reordered => { setQuestions(current => reordered.map(item => { const next = fromPersistedQuestion(item); const existing = current.find(question => question.id === next.id); return existing ? { ...next, viewerVote: existing.viewerVote } : next })); setSort('Manual') },
     })
   }, [boardId, isDemo, session])
 
   const visibleQuestions = useMemo(() => questions
-    .filter(item => questionView === 'Archived' ? item.status === 'Archived' : item.status !== 'Archived')
-    .filter(item => questionView !== 'Unanswered' || item.status === 'Open' || item.status === 'Selected')
+    .filter(item => questionView === 'Active' ? item.status === 'Open' || item.status === 'Selected' : questionView === 'Answered' ? item.status === 'Answered' : item.status === 'Archived')
     .filter(item => category === 'All' || item.category === category)
     .filter(item => item.body.toLowerCase().includes(query.toLowerCase()))
     .sort((a, b) => sort === 'Manual' ? (a.rank || '').localeCompare(b.rank || '') : sort === 'Top' ? (b.upvotes - b.downvotes) - (a.upvotes - a.downvotes) : sort === 'Newest' ? b.createdAt - a.createdAt : a.createdAt - b.createdAt),
@@ -193,6 +195,14 @@ function BoardPage({ boardId, navigate, session }: { boardId: string, navigate: 
       const saved = await commentOnQuestion(boardId, id, body, session?.idToken)
       setQuestions(current => current.map(item => item.id === id ? { ...item, comments: [...item.comments, { id: saved.id, author: saved.authorDisplayName, body: saved.body, time: 'Just now' }] } : item))
     } catch (reason) { setBoardError(reason instanceof Error ? reason.message : 'Could not save comment.') }
+  }
+
+  const moderateComment = async (questionId: string, commentId: string, hidden: boolean) => {
+    if (!session || isDemo) return
+    try {
+      await setCommentVisibility(boardId, questionId, commentId, hidden, session.idToken)
+      setQuestions(current => current.map(question => question.id === questionId ? { ...question, comments: question.comments.map(item => item.id === commentId ? { ...item, hidden } : item) } : question))
+    } catch (reason) { setBoardError(reason instanceof Error ? reason.message : 'Could not moderate this comment.') }
   }
 
   const submitQuestion = async () => {
@@ -306,7 +316,7 @@ function BoardPage({ boardId, navigate, session }: { boardId: string, navigate: 
         <section className="toolbar">
           <div className="category-tabs">{['All', ...boardCategories].map(item => <button key={item} className={category === item ? 'active' : ''} onClick={() => setCategory(item)}>{item}</button>)}</div>
           <div className="tools">
-            <label className="view-filter">View: <select value={questionView} onChange={event => setQuestionView(event.target.value as QuestionView)}><option>Active</option><option>Unanswered</option>{session && !isDemo && <option>Archived</option>}</select><ChevronDown size={15} /></label>
+            <label className="view-filter">View: <select value={questionView} onChange={event => setQuestionView(event.target.value as QuestionView)}><option>Active</option><option>Answered</option>{session && !isDemo && <option>Archived</option>}</select><ChevronDown size={15} /></label>
             <label className="search"><Search size={17} /><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search questions" /></label>
             <label className="sort">Sort: <select value={sort} onChange={event => setSort(event.target.value as SortMode)}>{session && !isDemo && <option>Manual</option>}<option>Top</option><option>Newest</option><option>Oldest</option></select><ChevronDown size={15} /></label>
           </div>
@@ -314,7 +324,7 @@ function BoardPage({ boardId, navigate, session }: { boardId: string, navigate: 
 
         <section className="content-heading"><div><h2>{questionView} questions</h2><span>{visibleQuestions.length} shown</span></div>{!isDemo && <span className={`realtime-status ${realtimeStatus}`} title="AppSync live connection">{realtimeStatus === 'connected' ? <Wifi size={15} /> : <WifiOff size={15} />} {realtimeStatus === 'connected' ? 'Live' : realtimeStatus === 'reconnecting' ? 'Reconnecting…' : realtimeStatus === 'connecting' ? 'Connecting…' : 'Offline'}</span>}</section>
         <section className="question-list">
-          {visibleQuestions.map(question => <QuestionCard key={question.id} question={question} onVote={vote} onPresent={startPresentation} onComment={addComment} onAdmin={administerQuestion} votingMode={votingMode} commentsEnabled={commentsEnabled} visibleVoteTotals={visibleVoteTotals} canPresent={isDemo || !!session} canManage={!!session && !isDemo} />)}
+          {visibleQuestions.map(question => <QuestionCard key={question.id} question={question} onVote={vote} onPresent={startPresentation} onComment={addComment} onModerateComment={moderateComment} onAdmin={administerQuestion} votingMode={votingMode} commentsEnabled={commentsEnabled} visibleVoteTotals={visibleVoteTotals} canPresent={isDemo || !!session} canManage={!!session && !isDemo} />)}
           {visibleQuestions.length === 0 && <div className="empty"><Search size={28} /><h3>No questions found</h3><p>Try a different search or category.</p></div>}
         </section>
       </main>

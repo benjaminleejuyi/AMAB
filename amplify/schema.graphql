@@ -38,7 +38,7 @@ type Question @aws_cognito_user_pools @aws_api_key {
   deleted: Boolean
 }
 
-type Comment { id: ID!, boardId: ID, questionId: ID!, body: String!, authorDisplayName: String!, createdAt: AWSDateTime! }
+type Comment { id: ID!, boardId: ID, questionId: ID!, body: String!, authorDisplayName: String!, createdAt: AWSDateTime!, hidden: Boolean }
 type QuestionConnection { items: [Question!]!, nextToken: String }
 type BoardMember { boardId: ID!, userId: ID!, role: BoardRole! }
 type OrganizationSettings { organizationName: String!, defaultVisibility: BoardVisibility!, defaultVotingMode: VotingMode!, membersCanCreateBoards: Boolean!, updatedAt: AWSDateTime }
@@ -60,6 +60,7 @@ type Mutation {
   createQuestion(input: CreateQuestionInput!): Question! @aws_cognito_user_pools @aws_api_key
   castVote(input: CastVoteInput!): Question! @aws_cognito_user_pools @aws_api_key
   addComment(input: AddCommentInput!): Comment! @aws_cognito_user_pools @aws_api_key
+  setCommentVisibility(boardId: ID!, questionId: ID!, commentId: ID!, hidden: Boolean!): Comment! @aws_cognito_user_pools
   updateQuestion(input: UpdateQuestionInput!): Question! @aws_cognito_user_pools
   deleteQuestion(boardId: ID!, questionId: ID!): Question! @aws_cognito_user_pools
   reorderQuestions(boardId: ID!, questionIds: [ID!]!): [Question!]! @aws_cognito_user_pools
@@ -81,8 +82,11 @@ type Query {
 type Subscription {
   questionChanged(boardId: ID!): Question @aws_subscribe(mutations: ["createQuestion", "castVote", "updateQuestion", "deleteQuestion"])
   commentAdded(boardId: ID!): Comment @aws_subscribe(mutations: ["addComment"])
+  commentModerated(boardId: ID!): Comment @aws_subscribe(mutations: ["setCommentVisibility"])
   presentationChanged(boardId: ID!): Board @aws_subscribe(mutations: ["selectQuestion"])
-  questionsReordered(boardId: ID!): [Question!]! @aws_subscribe(mutations: ["reorderQuestions"])
+  # Subscription fields must be nullable while AppSync registers the listener;
+  # there is no mutation result to resolve during the initial start operation.
+  questionsReordered(boardId: ID!): [Question!] @aws_subscribe(mutations: ["reorderQuestions"])
 }
 
 schema { query: Query, mutation: Mutation, subscription: Subscription }

@@ -9,11 +9,12 @@ describe('AMA board', () => {
     window.__AMA_BOARD_CONFIG__ = { appSyncEndpoint: 'https://appsync.example/graphql', appSyncApiKey: 'test-key' }
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async (_url: string, options: RequestInit) => {
       const query = JSON.parse(String(options.body)).query as string
-      const question = { id: 'q1', boardId: 'all-company', body: 'What should we focus on?', authorDisplayName: 'Helpful Heron', category: 'Strategy', status: 'OPEN', upvotes: 4, downvotes: 0, comments: [], createdAt: new Date().toISOString() }
+      const question = { id: 'q1', boardId: 'all-company', body: 'What should we focus on?', authorDisplayName: 'Helpful Heron', category: 'Strategy', status: 'OPEN', upvotes: 4, downvotes: 0, comments: [{ id: 'c1', boardId: 'all-company', questionId: 'q1', authorDisplayName: 'Curious Otter', body: 'Please share the timeline.', createdAt: new Date().toISOString(), hidden: false }], createdAt: new Date().toISOString() }
       const data = query.includes('query Board') ? { getBoard: { id: 'all-company', title: 'Ask the leadership team', description: 'Demo', visibility: 'PUBLIC', postingPolicy: 'ANYONE', votingMode: 'UP_DOWN', commentsEnabled: true, visibleVoteTotals: true, anonymousPosting: true, categories: ['Strategy', 'Product'] } }
         : query.includes('query Questions') ? { listQuestions: { items: [question] } }
           : query.includes('mutation Post') ? { createQuestion: { ...question, id: 'new-question', body: JSON.parse(String(options.body)).variables.input.body } }
             : query.includes('mutation UpdateQuestion') ? { updateQuestion: { ...question, ...JSON.parse(String(options.body)).variables.input, status: JSON.parse(String(options.body)).variables.input.status || question.status, rank: new Date().toISOString() } }
+              : query.includes('mutation ModerateComment') ? { setCommentVisibility: { id: 'c1', boardId: 'all-company', questionId: 'q1', hidden: JSON.parse(String(options.body)).variables.hidden } }
               : query.includes('mutation DeleteQuestion') ? { deleteQuestion: { ...question, deleted: true } }
             : query.includes('mutation Present') ? { selectQuestion: { id: 'all-company', presentedQuestionId: 'q1' } }
               : query.includes('query ListBoards') ? { listBoards: [] }
@@ -118,6 +119,19 @@ describe('AMA board', () => {
     expect(screen.getByRole('alertdialog', { name: /delete this question/i })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /delete question/i }))
     await waitFor(() => expect(screen.queryByText('What should we focus on?')).not.toBeInTheDocument())
+  })
+
+  it('allows an administrator to hide and restore a comment', async () => {
+    window.history.replaceState({}, '', '/boards/real-board')
+    sessionStorage.setItem('ama-board-session', JSON.stringify({ accessToken: 'access', idToken, email: 'admin@example.com', groups: ['Admins'] }))
+    render(<App />)
+    await screen.findByText('What should we focus on?')
+    fireEvent.click(screen.getByRole('button', { name: /1 comment/i }))
+    expect(screen.getByText('Please share the timeline.')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Hide' }))
+    expect(await screen.findByText('Hidden from participants')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Show' })).toBeInTheDocument()
+    expect(vi.mocked(fetch).mock.calls.some(([, options]) => String(options?.body).includes('mutation ModerateComment'))).toBe(true)
   })
 
   it('shows the signed-in account and site administration', () => {

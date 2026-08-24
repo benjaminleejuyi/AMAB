@@ -114,16 +114,18 @@ export async function listBoards(idToken: string): Promise<BoardSummary[]> {
   return data.listBoards
 }
 
-export interface PersistedComment { id: string, boardId?: string, questionId?: string, authorDisplayName: string, body: string, createdAt: string }
+export interface PersistedComment { id: string, boardId?: string, questionId?: string, authorDisplayName: string, body: string, createdAt: string, hidden?: boolean }
 export interface PersistedQuestion { id: string, boardId: string, body: string, authorDisplayName: string, category: string, status: string, rank: string, upvotes: number, downvotes: number, comments: PersistedComment[], createdAt: string, updatedAt?: string, deleted?: boolean }
 export interface PersistedBoard { id: string, boardId?: string, title: string, description?: string, visibility: string, postingPolicy: string, votingMode: string, commentsEnabled: boolean, visibleVoteTotals: boolean, anonymousPosting: boolean, categories: string[], presentedQuestionId?: string }
 
 export const getBoard = async (id: string, token?: string) => (await graphQL<{ getBoard: PersistedBoard }>('query Board($id: ID!) { getBoard(id: $id) { id title description visibility postingPolicy votingMode commentsEnabled visibleVoteTotals anonymousPosting categories presentedQuestionId } }', { id }, token)).getBoard
-const questionFields = 'id boardId body authorDisplayName category status rank upvotes downvotes createdAt updatedAt deleted comments { id boardId authorDisplayName body createdAt questionId }'
+const questionFields = 'id boardId body authorDisplayName category status rank upvotes downvotes createdAt updatedAt deleted comments { id boardId authorDisplayName body createdAt questionId hidden }'
+const realtimeQuestionFields = 'id boardId body authorDisplayName category status rank upvotes downvotes createdAt updatedAt deleted'
 export const getQuestions = async (boardId: string, token?: string) => (await graphQL<{ listQuestions: { items: PersistedQuestion[] } }>(`query Questions($boardId: ID!) { listQuestions(boardId: $boardId) { items { ${questionFields} } } }`, { boardId }, token)).listQuestions.items
 export const postQuestion = async (boardId: string, body: string, category: string, token?: string, identifyAs?: string) => (await graphQL<{ createQuestion: PersistedQuestion }>(`mutation Post($input: CreateQuestionInput!) { createQuestion(input: $input) { ${questionFields} } }`, { input: { boardId, body, category, identifyAs } }, token)).createQuestion
 export const voteQuestion = async (boardId: string, questionId: string, value: number, token?: string) => (await graphQL<{ castVote: PersistedQuestion }>(`mutation Vote($input: CastVoteInput!) { castVote(input: $input) { ${questionFields} } }`, { input: { boardId, questionId, value } }, token)).castVote
 export const commentOnQuestion = async (boardId: string, questionId: string, body: string, token?: string) => (await graphQL<{ addComment: PersistedComment }>('mutation Comment($input: AddCommentInput!) { addComment(input: $input) { id boardId questionId authorDisplayName body createdAt } }', { input: { boardId, questionId, body } }, token)).addComment
+export const setCommentVisibility = async (boardId: string, questionId: string, commentId: string, hidden: boolean, token: string) => (await graphQL<{ setCommentVisibility: PersistedComment }>('mutation ModerateComment($boardId: ID!, $questionId: ID!, $commentId: ID!, $hidden: Boolean!) { setCommentVisibility(boardId: $boardId, questionId: $questionId, commentId: $commentId, hidden: $hidden) { id boardId questionId hidden } }', { boardId, questionId, commentId, hidden }, token)).setCommentVisibility
 export const updateQuestion = async (input: Record<string, unknown>, token: string) => (await graphQL<{ updateQuestion: PersistedQuestion }>(`mutation UpdateQuestion($input: UpdateQuestionInput!) { updateQuestion(input: $input) { ${questionFields} } }`, { input }, token)).updateQuestion
 export const deleteQuestion = async (boardId: string, questionId: string, token: string) => (await graphQL<{ deleteQuestion: PersistedQuestion }>(`mutation DeleteQuestion($boardId: ID!, $questionId: ID!) { deleteQuestion(boardId: $boardId, questionId: $questionId) { ${questionFields} } }`, { boardId, questionId }, token)).deleteQuestion
 export const reorderQuestions = async (boardId: string, questionIds: string[], token: string) => (await graphQL<{ reorderQuestions: PersistedQuestion[] }>(`mutation ReorderQuestions($boardId: ID!, $questionIds: [ID!]!) { reorderQuestions(boardId: $boardId, questionIds: $questionIds) { ${questionFields} } }`, { boardId, questionIds }, token)).reorderQuestions
@@ -154,6 +156,7 @@ export type RealtimeStatus = 'connecting' | 'connected' | 'reconnecting' | 'disc
 export interface BoardRealtimeHandlers {
   question: (question: PersistedQuestion) => void
   comment: (comment: PersistedComment & { boardId: string, questionId: string }) => void
+  commentModerated: (comment: Pick<PersistedComment, 'id' | 'boardId' | 'questionId' | 'hidden'> & { boardId: string, questionId: string }) => void
   presentation: (board: { id: string, boardId: string, presentedQuestionId?: string }) => void
   reordered: (questions: PersistedQuestion[]) => void
   status: (status: RealtimeStatus) => void
@@ -177,10 +180,11 @@ export function subscribeToBoard(boardId: string, tokenProvider: () => Promise<s
   let tokenTimer = 0
   let connectedOnce = false
   const subscriptions = [
-    ['question', `subscription QuestionChanged($boardId: ID!) { questionChanged(boardId: $boardId) { ${questionFields} } }`],
+    ['question', `subscription QuestionChanged($boardId: ID!) { questionChanged(boardId: $boardId) { ${realtimeQuestionFields} } }`],
     ['comment', 'subscription CommentAdded($boardId: ID!) { commentAdded(boardId: $boardId) { id boardId questionId authorDisplayName body createdAt } }'],
     ['presentation', 'subscription PresentationChanged($boardId: ID!) { presentationChanged(boardId: $boardId) { id boardId presentedQuestionId } }'],
-    ['reordered', `subscription QuestionsReordered($boardId: ID!) { questionsReordered(boardId: $boardId) { ${questionFields} } }`],
+    ['commentModerated', 'subscription CommentModerated($boardId: ID!) { commentModerated(boardId: $boardId) { id boardId questionId hidden } }'],
+    ['reordered', `subscription QuestionsReordered($boardId: ID!) { questionsReordered(boardId: $boardId) { ${realtimeQuestionFields} } }`],
   ] as const
   const clearTimers = () => { window.clearTimeout(reconnectTimer); window.clearTimeout(watchdogTimer); window.clearTimeout(tokenTimer) }
   const scheduleWatchdog = () => { window.clearTimeout(watchdogTimer); watchdogTimer = window.setTimeout(() => socket?.close(4000, 'Heartbeat timeout'), 90_000) }
@@ -217,6 +221,7 @@ export function subscribeToBoard(boardId: string, tokenProvider: () => Promise<s
           const data = message.payload?.data
           if (data?.questionChanged) handlers.question(data.questionChanged)
           if (data?.commentAdded) handlers.comment(data.commentAdded)
+          if (data?.commentModerated) handlers.commentModerated(data.commentModerated)
           if (data?.presentationChanged) handlers.presentation(data.presentationChanged)
           if (data?.questionsReordered) handlers.reordered(data.questionsReordered)
         } else if (message.type === 'connection_error') {

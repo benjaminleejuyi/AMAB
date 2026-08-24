@@ -6,6 +6,7 @@ export interface Comment {
   author: string
   body: string
   time: string
+  hidden?: boolean
 }
 
 export interface Question {
