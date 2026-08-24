@@ -40,7 +40,7 @@ type Question @aws_cognito_user_pools @aws_api_key {
 
 type Comment { id: ID!, boardId: ID, questionId: ID!, body: String!, authorDisplayName: String!, createdAt: AWSDateTime!, hidden: Boolean }
 type QuestionConnection { items: [Question!]!, nextToken: String }
-type BoardMember { boardId: ID!, userId: ID!, email: AWSEmail, role: BoardRole! }
+type BoardMember { boardId: ID!, userId: ID!, email: AWSEmail, role: BoardRole!, invitationStatus: String }
 type BoardAccess { role: BoardRole, canEditBoard: Boolean!, canModerateQuestions: Boolean!, canModerateComments: Boolean!, canPresent: Boolean!, canDeleteBoard: Boolean! }
 type ModerationEvent { id: ID!, boardId: ID!, actorId: ID!, action: String!, targetType: String!, targetId: ID!, createdAt: AWSDateTime! }
 type OrganizationSettings { organizationName: String!, defaultVisibility: BoardVisibility!, defaultVotingMode: VotingMode!, membersCanCreateBoards: Boolean!, updatedAt: AWSDateTime }

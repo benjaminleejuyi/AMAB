@@ -15,6 +15,7 @@ describe('AMA board', () => {
           : query.includes('query BoardMembers') ? { listBoardMembers: [{ boardId: 'all-company', userId: 'owner-1', email: 'admin@example.com', role: 'OWNER' }, { boardId: 'all-company', userId: 'moderator-1', email: 'moderator@example.com', role: 'MODERATOR' }] }
             : query.includes('query ModerationEvents') ? { listModerationEvents: [{ id: 'audit-1', boardId: 'all-company', actorId: 'owner-1', action: 'COMMENT_HIDDEN', targetType: 'COMMENT', targetId: 'c1', createdAt: new Date().toISOString() }] }
               : query.includes('mutation RemoveBoardMember') ? { removeBoardMember: true }
+                : query.includes('mutation Invite') ? { inviteUser: { boardId: 'all-company', userId: 'moderator-2', email: 'new.moderator@example.com', role: 'MODERATOR', invitationStatus: 'SENT' } }
             : query.includes('query Questions') ? { listQuestions: { items: [question] } }
           : query.includes('mutation Post') ? { createQuestion: { ...question, id: 'new-question', body: JSON.parse(String(options.body)).variables.input.body } }
             : query.includes('mutation UpdateQuestion') ? { updateQuestion: { ...question, ...JSON.parse(String(options.body)).variables.input, status: JSON.parse(String(options.body)).variables.input.status || question.status, rank: new Date().toISOString() } }
@@ -89,6 +90,10 @@ describe('AMA board', () => {
     expect(await screen.findByText('moderator@example.com')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
     await waitFor(() => expect(screen.queryByText('moderator@example.com')).not.toBeInTheDocument())
+    fireEvent.change(screen.getByPlaceholderText('colleague@company.com'), { target: { value: 'new.moderator@example.com' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send invitation' }))
+    expect(await screen.findByText('Invitation sent to new.moderator@example.com.')).toBeInTheDocument()
+    expect(screen.getByText('new.moderator@example.com')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Activity' }))
     expect(await screen.findByText('comment hidden')).toBeInTheDocument()
   })

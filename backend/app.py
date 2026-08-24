@@ -10,6 +10,7 @@ from decimal import Decimal
 
 import boto3
 from boto3.dynamodb.conditions import Attr, Key
+from botocore.exceptions import ClientError
 
 TABLE_NAME = os.environ["TABLE_NAME"]
 USER_POOL_ID = os.environ["USER_POOL_ID"]
@@ -430,14 +431,32 @@ def assign_moderator(args: dict, user_id: str) -> dict:
 
 def invite_user(args: dict, user_id: str, organisation_admin: bool) -> dict:
     _require_board_role(args["boardId"], user_id, owner_only=True, organisation_admin=organisation_admin)
-    response = boto3.client("cognito-idp").admin_create_user(
-        UserPoolId=USER_POOL_ID,
-        Username=args["email"],
-        UserAttributes=[{"Name": "email", "Value": args["email"]}, {"Name": "email_verified", "Value": "true"}],
-        DesiredDeliveryMediums=["EMAIL"],
-    )
+    email = args["email"].strip().lower()
+    cognito = boto3.client("cognito-idp")
+    invitation_status = "SENT"
+    try:
+        response = cognito.admin_create_user(
+            UserPoolId=USER_POOL_ID,
+            Username=email,
+            UserAttributes=[{"Name": "email", "Value": email}, {"Name": "email_verified", "Value": "true"}],
+            DesiredDeliveryMediums=["EMAIL"],
+        )
+    except cognito.exceptions.UsernameExistsException:
+        existing = cognito.admin_get_user(UserPoolId=USER_POOL_ID, Username=email)
+        response = {"User": {"Username": existing["Username"]}}
+        if existing.get("UserStatus") == "FORCE_CHANGE_PASSWORD":
+            response = cognito.admin_create_user(
+                UserPoolId=USER_POOL_ID, Username=email, MessageAction="RESEND",
+                DesiredDeliveryMediums=["EMAIL"],
+            )
+            invitation_status = "RESENT"
+        else:
+            invitation_status = "EXISTING"
+    except ClientError as error:
+        details = error.response.get("Error", {})
+        raise RuntimeError(f"Cognito invitation failed ({details.get('Code', 'Unknown')}): {details.get('Message', str(error))}") from error
     invited_user_id = response["User"]["Username"]
-    item = {"PK": f"BOARD#{args['boardId']}", "SK": f"MEMBER#{invited_user_id}", "entity": "MEMBER", "boardId": args["boardId"], "userId": invited_user_id, "email": args["email"], "role": "MODERATOR"}
+    item = {"PK": f"BOARD#{args['boardId']}", "SK": f"MEMBER#{invited_user_id}", "entity": "MEMBER", "boardId": args["boardId"], "userId": invited_user_id, "email": email, "role": "MODERATOR", "invitationStatus": invitation_status}
     table.put_item(Item=item)
     _audit(args["boardId"], user_id, "MODERATOR_INVITED", "MEMBER", invited_user_id)
     return _public(item)

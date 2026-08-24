@@ -476,7 +476,12 @@ function SettingsPage({ boardId, navigate, session }: { boardId: string, navigat
   }
   const sendInvite = async () => {
     setInviteStatus('Sending…')
-    try { const member = await inviteUser(boardId, inviteEmail, session.idToken); setMembers(current => [...current.filter(item => item.userId !== member.userId), member]); setInviteStatus(`Invitation sent to ${inviteEmail}`); setInviteEmail('') }
+    try {
+      const member = await inviteUser(boardId, inviteEmail, session.idToken)
+      setMembers(current => [...current.filter(item => item.userId !== member.userId), member])
+      setInviteStatus(member.invitationStatus === 'EXISTING' ? `${member.email} already has an account and was added as a moderator.` : member.invitationStatus === 'RESENT' ? `Invitation resent to ${member.email}.` : `Invitation sent to ${member.email}.`)
+      setInviteEmail('')
+    }
     catch (reason) { setInviteStatus(reason instanceof Error ? reason.message : 'Could not send invitation.') }
   }
   const revokeMember = async (member: BoardMember) => {

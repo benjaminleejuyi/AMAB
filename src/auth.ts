@@ -95,7 +95,7 @@ export async function inviteUser(boardId: string, email: string, idToken: string
   if (!config.appSyncEndpoint) throw new Error('AppSync has not been configured for this deployment.')
   const response = await fetch(config.appSyncEndpoint, {
     method: 'POST', headers: { 'content-type': 'application/json', Authorization: idToken },
-    body: JSON.stringify({ query: 'mutation Invite($boardId: ID!, $email: AWSEmail!) { inviteUser(boardId: $boardId, email: $email) { boardId userId role } }', variables: { boardId, email } }),
+    body: JSON.stringify({ query: 'mutation Invite($boardId: ID!, $email: AWSEmail!) { inviteUser(boardId: $boardId, email: $email) { boardId userId email role invitationStatus } }', variables: { boardId, email } }),
   })
   const payload = await response.json()
   if (!response.ok || payload.errors) throw new Error(payload.errors?.[0]?.message || 'Could not invite user.')
@@ -108,7 +108,7 @@ export async function createBoard(title: string, description: string, idToken: s
 }
 
 export interface BoardSummary { id: string, title: string, description?: string, visibility: string }
-export interface BoardMember { boardId: string, userId: string, email?: string, role: 'OWNER' | 'MODERATOR' }
+export interface BoardMember { boardId: string, userId: string, email?: string, role: 'OWNER' | 'MODERATOR', invitationStatus?: 'SENT' | 'RESENT' | 'EXISTING' }
 export interface BoardAccess { role?: 'OWNER' | 'MODERATOR', canEditBoard: boolean, canModerateQuestions: boolean, canModerateComments: boolean, canPresent: boolean, canDeleteBoard: boolean }
 export interface ModerationEvent { id: string, boardId: string, actorId: string, action: string, targetType: string, targetId: string, createdAt: string }
 
@@ -123,7 +123,7 @@ export interface PersistedBoard { id: string, boardId?: string, title: string, d
 
 export const getBoard = async (id: string, token?: string) => (await graphQL<{ getBoard: PersistedBoard }>('query Board($id: ID!) { getBoard(id: $id) { id title description visibility postingPolicy votingMode commentsEnabled visibleVoteTotals anonymousPosting categories presentedQuestionId } }', { id }, token)).getBoard
 export const getMyBoardAccess = async (boardId: string, token: string) => (await graphQL<{ getMyBoardAccess: BoardAccess }>('query BoardAccess($boardId: ID!) { getMyBoardAccess(boardId: $boardId) { role canEditBoard canModerateQuestions canModerateComments canPresent canDeleteBoard } }', { boardId }, token)).getMyBoardAccess
-export const listBoardMembers = async (boardId: string, token: string) => (await graphQL<{ listBoardMembers: BoardMember[] }>('query BoardMembers($boardId: ID!) { listBoardMembers(boardId: $boardId) { boardId userId email role } }', { boardId }, token)).listBoardMembers
+export const listBoardMembers = async (boardId: string, token: string) => (await graphQL<{ listBoardMembers: BoardMember[] }>('query BoardMembers($boardId: ID!) { listBoardMembers(boardId: $boardId) { boardId userId email role invitationStatus } }', { boardId }, token)).listBoardMembers
 export const removeBoardMember = async (boardId: string, userId: string, token: string) => (await graphQL<{ removeBoardMember: boolean }>('mutation RemoveBoardMember($boardId: ID!, $userId: ID!) { removeBoardMember(boardId: $boardId, userId: $userId) }', { boardId, userId }, token)).removeBoardMember
 export const listModerationEvents = async (boardId: string, token: string) => (await graphQL<{ listModerationEvents: ModerationEvent[] }>('query ModerationEvents($boardId: ID!) { listModerationEvents(boardId: $boardId) { id boardId actorId action targetType targetId createdAt } }', { boardId }, token)).listModerationEvents
 const questionFields = 'id boardId body authorDisplayName category status rank upvotes downvotes createdAt updatedAt deleted comments { id boardId authorDisplayName body createdAt questionId hidden }'
