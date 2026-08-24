@@ -10,7 +10,7 @@ describe('AMA board', () => {
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async (_url: string, options: RequestInit) => {
       const query = JSON.parse(String(options.body)).query as string
       const question = { id: 'q1', boardId: 'all-company', body: 'What should we focus on?', authorDisplayName: 'Helpful Heron', category: 'Strategy', status: 'OPEN', upvotes: 4, downvotes: 0, comments: [], createdAt: new Date().toISOString() }
-      const data = query.includes('query Board') ? { getBoard: { id: 'all-company', title: 'Ask the leadership team', description: 'Demo', visibility: 'PUBLIC', postingPolicy: 'ANYONE', votingMode: 'UP_DOWN', commentsEnabled: true, visibleVoteTotals: true, anonymousPosting: true } }
+      const data = query.includes('query Board') ? { getBoard: { id: 'all-company', title: 'Ask the leadership team', description: 'Demo', visibility: 'PUBLIC', postingPolicy: 'ANYONE', votingMode: 'UP_DOWN', commentsEnabled: true, visibleVoteTotals: true, anonymousPosting: true, categories: ['Strategy', 'Product'] } }
         : query.includes('query Questions') ? { listQuestions: { items: [question] } }
           : query.includes('mutation Post') ? { createQuestion: { ...question, id: 'new-question', body: JSON.parse(String(options.body)).variables.input.body } }
             : query.includes('mutation Present') ? { selectQuestion: { id: 'all-company', presentedQuestionId: 'q1' } }
@@ -89,6 +89,14 @@ describe('AMA board', () => {
     expect(screen.getByRole('heading', { name: /welcome, admin@example.com/i })).toBeInTheDocument()
   })
 
+  it('takes a signed-in administrator to board creation without another login', () => {
+    sessionStorage.setItem('ama-board-session', JSON.stringify({ accessToken: 'access', idToken, email: 'admin@example.com', groups: ['Admins'] }))
+    render(<App />)
+    fireEvent.click(screen.getByRole('button', { name: /create your board/i }))
+    expect(window.location.pathname).toBe('/admin')
+    expect(screen.queryByRole('dialog', { name: /welcome back/i })).not.toBeInTheDocument()
+  })
+
   it('creates a board from the admin panel', async () => {
     window.history.replaceState({}, '', '/admin')
     sessionStorage.setItem('ama-board-session', JSON.stringify({ accessToken: 'access', idToken, email: 'admin@example.com', groups: ['Admins'] }))
@@ -98,7 +106,7 @@ describe('AMA board', () => {
       const data = query.includes('ListBoards') ? { listBoards: [] }
         : query.includes('query Org') ? { getOrganizationSettings: { organizationName: 'Anyhow Only', defaultVisibility: 'UNLISTED', defaultVotingMode: 'UP_DOWN', membersCanCreateBoards: false } }
           : query.includes('CreateBoard') ? { createBoard: { id: 'new-board', title: 'Product AMA' } }
-            : query.includes('query Board') ? { getBoard: { id: 'new-board', title: 'Product AMA', description: '', visibility: 'UNLISTED', postingPolicy: 'ANYONE', votingMode: 'UP_DOWN', commentsEnabled: true, visibleVoteTotals: true, anonymousPosting: true } }
+            : query.includes('query Board') ? { getBoard: { id: 'new-board', title: 'Product AMA', description: '', visibility: 'UNLISTED', postingPolicy: 'ANYONE', votingMode: 'UP_DOWN', commentsEnabled: true, visibleVoteTotals: true, anonymousPosting: true, categories: ['General'] } }
               : {}
       return { ok: true, json: async () => ({ data }) }
     }))

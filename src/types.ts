@@ -1,5 +1,5 @@
 export type QuestionStatus = 'Open' | 'Selected' | 'Answered'
-export type QuestionCategory = 'Strategy' | 'Product' | 'Culture' | 'People'
+export type QuestionCategory = string
 
 export interface Comment {
   id: string

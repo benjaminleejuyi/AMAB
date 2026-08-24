@@ -38,8 +38,11 @@ def _get_board(board_id: str) -> dict:
     result = table.get_item(Key={"PK": f"BOARD#{board_id}", "SK": "META"}).get("Item")
     if not result and board_id == "all-company":
         now = _now()
-        result = {"PK": "BOARD#all-company", "SK": "META", "entity": "BOARD", "id": "all-company", "title": "Ask the leadership team", "description": "Vote for what matters. We’ll answer the most important questions live.", "visibility": "PUBLIC", "postingPolicy": "ANYONE", "votingMode": "UP_DOWN", "commentsEnabled": True, "visibleVoteTotals": True, "anonymousPosting": True, "presentedQuestionId": None, "createdBy": "SYSTEM", "createdAt": now, "updatedAt": now}
+        result = {"PK": "BOARD#all-company", "SK": "META", "entity": "BOARD", "id": "all-company", "title": "Ask the leadership team", "description": "Submit and vote on questions for the leadership team.", "visibility": "PUBLIC", "postingPolicy": "ANYONE", "votingMode": "UP_DOWN", "commentsEnabled": True, "visibleVoteTotals": True, "anonymousPosting": True, "categories": ["Strategy", "Product", "Culture", "People"], "presentedQuestionId": None, "createdBy": "SYSTEM", "createdAt": now, "updatedAt": now}
         table.put_item(Item=result)
+    elif result and not result.get("categories"):
+        result["categories"] = ["General"]
+        table.update_item(Key={"PK": result["PK"], "SK": result["SK"]}, UpdateExpression="SET categories = :categories", ExpressionAttributeValues={":categories": result["categories"]})
     if not result:
         raise ValueError("Board not found")
     return result
@@ -71,7 +74,7 @@ def create_board(args: dict, user_id: str, authenticated: bool, organisation_adm
         "title": data["title"], "description": data.get("description"),
         "visibility": data.get("visibility") or organization["defaultVisibility"], "postingPolicy": data.get("postingPolicy", "ANYONE"),
         "votingMode": data.get("votingMode") or organization["defaultVotingMode"], "commentsEnabled": data.get("commentsEnabled", True),
-        "visibleVoteTotals": True, "anonymousPosting": True, "presentedQuestionId": None, "createdBy": user_id,
+        "visibleVoteTotals": True, "anonymousPosting": True, "categories": ["General"], "presentedQuestionId": None, "createdBy": user_id,
         "createdAt": now, "updatedAt": now,
     }
     table.put_item(Item=item, ConditionExpression="attribute_not_exists(PK)")
@@ -86,7 +89,7 @@ def get_board(args: dict) -> dict:
 def update_board(args: dict, user_id: str, organisation_admin: bool) -> dict:
     data = args["input"]
     _require_board_role(data["id"], user_id, owner_only=True, organisation_admin=organisation_admin)
-    allowed = {"title", "description", "visibility", "postingPolicy", "votingMode", "commentsEnabled", "visibleVoteTotals", "anonymousPosting"}
+    allowed = {"title", "description", "visibility", "postingPolicy", "votingMode", "commentsEnabled", "visibleVoteTotals", "anonymousPosting", "categories"}
     changes = {key: value for key, value in data.items() if key in allowed and value is not None}
     if not changes:
         return _public(_get_board(data["id"]))
@@ -104,6 +107,22 @@ def update_board(args: dict, user_id: str, organisation_admin: bool) -> dict:
         ExpressionAttributeValues=values, ReturnValues="ALL_NEW",
     )
     return _public(result["Attributes"])
+
+
+def delete_board(args: dict, user_id: str, organisation_admin: bool) -> bool:
+    board_id = args["id"]
+    _require_board_role(board_id, user_id, owner_only=True, organisation_admin=organisation_admin)
+    board_items = table.query(KeyConditionExpression=Key("PK").eq(f"BOARD#{board_id}")).get("Items", [])
+    question_ids = [item["id"] for item in board_items if item.get("entity") == "QUESTION"]
+    with table.batch_writer() as batch:
+        for item in board_items:
+            batch.delete_item(Key={"PK": item["PK"], "SK": item["SK"]})
+        batch.delete_item(Key={"PK": "ORG#DEFAULT", "SK": f"BOARD#{board_id}"})
+        for question_id in question_ids:
+            votes = table.query(KeyConditionExpression=Key("PK").eq(f"QUESTION#{question_id}")).get("Items", [])
+            for vote in votes:
+                batch.delete_item(Key={"PK": vote["PK"], "SK": vote["SK"]})
+    return True
 
 
 def list_boards() -> list[dict]:
@@ -146,6 +165,9 @@ def update_my_settings(args: dict, user_id: str) -> dict:
 def create_question(args: dict, participant_id: str, authenticated: bool, organisation_admin: bool) -> dict:
     data, now = args["input"], _now()
     board = _get_board(data["boardId"])
+    categories = board.get("categories") or ["General"]
+    if data["category"] not in categories:
+        raise ValueError("That category is not enabled for this board")
     if board["postingPolicy"] == "CLOSED":
         raise PermissionError("This board is not accepting questions")
     if board["postingPolicy"] == "AUTHENTICATED" and not authenticated:
@@ -266,6 +288,7 @@ def handler(event: dict, _context: object) -> dict:
         "getOrganizationSettings": get_organisation_settings, "getMySettings": lambda: get_my_settings(user_id),
         "createBoard": lambda: create_board(args, user_id, authenticated, organisation_admin),
         "updateBoard": lambda: update_board(args, user_id, organisation_admin),
+        "deleteBoard": lambda: delete_board(args, user_id, organisation_admin),
         "createQuestion": lambda: create_question(args, user_id, authenticated, organisation_admin),
         "castVote": lambda: cast_vote(args, user_id), "addComment": lambda: add_comment(args, user_id),
         "selectQuestion": lambda: select_question(args, user_id, organisation_admin),

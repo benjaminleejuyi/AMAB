@@ -28,6 +28,8 @@ Public and unlisted boards are in scope. Private boards, multi-organization tena
 
 DynamoDB stores boards and board settings, questions, comments, per-participant votes, the selected presentation question, moderator memberships, organisation defaults, and each signed-in user's posting-identity preference. Local React state only reflects AppSync responses, so refreshing a board reloads its questions and comments from DynamoDB instead of fixture data.
 
+Board administrators can configure board-specific question categories and delete non-demo boards from Board settings. Deleting a board also removes its questions, embedded comments, vote records, and membership records.
+
 ## Deploy to AWS
 
 The infrastructure is configured to serve Askboard at `ama.anyhowonly.com` through Route 53, an ACM certificate, and CloudFront. The `anyhowonly.com` public hosted zone must already exist in the AWS account; the deployment script discovers it automatically or accepts `HOSTED_ZONE_ID` explicitly.
