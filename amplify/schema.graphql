@@ -14,6 +14,7 @@ type Board @aws_cognito_user_pools @aws_api_key {
   commentsEnabled: Boolean!
   visibleVoteTotals: Boolean!
   anonymousPosting: Boolean!
+  categories: [String!]!
   canModerate: Boolean!
   presentedQuestionId: ID
   createdBy: ID!
@@ -45,8 +46,8 @@ type OrganizationSettings { organizationName: String!, defaultVisibility: BoardV
 type UserSettings { userId: ID!, defaultIdentity: String!, updatedAt: AWSDateTime }
 
 input CreateQuestionInput { boardId: ID!, body: String!, category: String!, identifyAs: String }
-input CreateBoardInput { title: String!, description: String, visibility: BoardVisibility, postingPolicy: PostingPolicy, votingMode: VotingMode, commentsEnabled: Boolean }
-input UpdateBoardInput { id: ID!, title: String, description: String, visibility: BoardVisibility, postingPolicy: PostingPolicy, votingMode: VotingMode, commentsEnabled: Boolean, visibleVoteTotals: Boolean, anonymousPosting: Boolean }
+input CreateBoardInput { title: String!, description: String, visibility: BoardVisibility, postingPolicy: PostingPolicy, votingMode: VotingMode, commentsEnabled: Boolean, categories: [String!] }
+input UpdateBoardInput { id: ID!, title: String, description: String, visibility: BoardVisibility, postingPolicy: PostingPolicy, votingMode: VotingMode, commentsEnabled: Boolean, visibleVoteTotals: Boolean, anonymousPosting: Boolean, categories: [String!] }
 input CastVoteInput { boardId: ID!, questionId: ID!, value: Int! }
 input AddCommentInput { boardId: ID!, questionId: ID!, body: String! }
 input AddOfficialReplyInput { boardId: ID!, questionId: ID!, body: String! }
@@ -56,6 +57,7 @@ input UpdateUserSettingsInput { defaultIdentity: String! }
 type Mutation {
   createBoard(input: CreateBoardInput!): Board! @aws_cognito_user_pools
   updateBoard(input: UpdateBoardInput!): Board! @aws_cognito_user_pools
+  deleteBoard(id: ID!): Board! @aws_cognito_user_pools
   createQuestion(input: CreateQuestionInput!): Question! @aws_cognito_user_pools @aws_api_key
   castVote(input: CastVoteInput!): Question! @aws_cognito_user_pools @aws_api_key
   addComment(input: AddCommentInput!): Comment! @aws_cognito_user_pools @aws_api_key

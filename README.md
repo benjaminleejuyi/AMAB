@@ -32,6 +32,8 @@ Moderators, board owners, and organisation administrators can post one **Officia
 
 Every board's **Share** dialog provides its canonical URL, a one-click copy action, a phone-scannable QR code, and an SVG download suitable for presentation slides or event signage. QR generation happens entirely in the browser, so the board URL is not sent to an external QR service.
 
+Board administrators can configure up to ten question categories. Organisation administrators and board owners can permanently delete a board from the Boards administration tab; the in-app confirmation requires the exact board title and deletes its questions, official replies, comments, votes, and memberships without using a browser-native JavaScript confirmation dialog.
+
 ## Deploy to AWS
 
 The infrastructure is configured to serve Askboard at `ama.anyhowonly.com` through Route 53, an ACM certificate, and CloudFront. The `anyhowonly.com` public hosted zone must already exist in the AWS account; the deployment script discovers it automatically or accepts `HOSTED_ZONE_ID` explicitly.

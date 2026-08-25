@@ -42,6 +42,7 @@ def _get_board(board_id: str) -> dict:
         table.put_item(Item=result)
     if not result:
         raise ValueError("Board not found")
+    result.setdefault("categories", ["Strategy", "Product", "Culture", "People"])
     return result
 
 
@@ -82,7 +83,9 @@ def create_board(args: dict, user_id: str, authenticated: bool, organisation_adm
         "title": data["title"], "description": data.get("description"),
         "visibility": data.get("visibility") or organization["defaultVisibility"], "postingPolicy": data.get("postingPolicy", "ANYONE"),
         "votingMode": data.get("votingMode") or organization["defaultVotingMode"], "commentsEnabled": data.get("commentsEnabled", True),
-        "visibleVoteTotals": True, "anonymousPosting": True, "presentedQuestionId": None, "createdBy": user_id,
+        "visibleVoteTotals": True, "anonymousPosting": True,
+        "categories": data.get("categories") or ["Strategy", "Product", "Culture", "People"],
+        "presentedQuestionId": None, "createdBy": user_id,
         "createdAt": now, "updatedAt": now,
     }
     table.put_item(Item=item, ConditionExpression="attribute_not_exists(PK)")
@@ -104,7 +107,12 @@ def update_board(args: dict, user_id: str, organisation_admin: bool) -> dict:
         raise ValueError("Board title must be between 1 and 120 characters")
     if len(data.get("description") or "") > 1000:
         raise ValueError("Board description must not exceed 1000 characters")
-    allowed = {"title", "description", "visibility", "postingPolicy", "votingMode", "commentsEnabled", "visibleVoteTotals", "anonymousPosting"}
+    if "categories" in data:
+        cleaned_categories = [category.strip() for category in data["categories"] if category.strip()]
+        if not cleaned_categories or len(cleaned_categories) > 10 or any(len(category) > 40 for category in cleaned_categories):
+            raise ValueError("Provide between 1 and 10 categories of no more than 40 characters each")
+        data["categories"] = list(dict.fromkeys(cleaned_categories))
+    allowed = {"title", "description", "visibility", "postingPolicy", "votingMode", "commentsEnabled", "visibleVoteTotals", "anonymousPosting", "categories"}
     changes = {key: value for key, value in data.items() if key in allowed and value is not None}
     if not changes:
         return {**_public(_get_board(data["id"])), "canModerate": True}
@@ -124,11 +132,48 @@ def update_board(args: dict, user_id: str, organisation_admin: bool) -> dict:
     return {**_public(result["Attributes"]), "canModerate": True}
 
 
+def delete_board(args: dict, user_id: str, organisation_admin: bool) -> dict:
+    board_id = args["id"]
+    board = _get_board(board_id)
+    _require_board_role(board_id, user_id, owner_only=True, organisation_admin=organisation_admin)
+    board_items, start_key = [], None
+    while True:
+        parameters = {"KeyConditionExpression": Key("PK").eq(f"BOARD#{board_id}")}
+        if start_key:
+            parameters["ExclusiveStartKey"] = start_key
+        result = table.query(**parameters)
+        board_items.extend(result.get("Items", []))
+        start_key = result.get("LastEvaluatedKey")
+        if not start_key:
+            break
+    question_ids = [item["id"] for item in board_items if item.get("entity") == "QUESTION"]
+    with table.batch_writer() as batch:
+        for item in board_items:
+            batch.delete_item(Key={"PK": item["PK"], "SK": item["SK"]})
+        batch.delete_item(Key={"PK": "ORG#DEFAULT", "SK": f"BOARD#{board_id}"})
+        for question_id in question_ids:
+            vote_start_key = None
+            while True:
+                vote_parameters = {"KeyConditionExpression": Key("PK").eq(f"QUESTION#{question_id}")}
+                if vote_start_key:
+                    vote_parameters["ExclusiveStartKey"] = vote_start_key
+                votes = table.query(**vote_parameters)
+                for vote in votes.get("Items", []):
+                    batch.delete_item(Key={"PK": vote["PK"], "SK": vote["SK"]})
+                vote_start_key = votes.get("LastEvaluatedKey")
+                if not vote_start_key:
+                    break
+    return {**_public(board), "canModerate": True}
+
+
 def list_boards(user_id: str, organisation_admin: bool) -> list[dict]:
     # The organization is intentionally single-tenant. Scanning board metadata
     # also discovers boards created before the organization index was added.
     result = table.scan(FilterExpression=Attr("entity").eq("BOARD") & Attr("SK").eq("META"))
-    return [{**_public(item), "canModerate": _can_moderate(item, user_id, organisation_admin)} for item in result.get("Items", [])]
+    boards = result.get("Items", [])
+    for board in boards:
+        board.setdefault("categories", ["Strategy", "Product", "Culture", "People"])
+    return [{**_public(item), "canModerate": _can_moderate(item, user_id, organisation_admin)} for item in boards]
 
 
 def get_organisation_settings() -> dict:
@@ -332,6 +377,7 @@ def handler(event: dict, _context: object) -> dict:
         "getOrganizationSettings": get_organisation_settings, "getMySettings": lambda: get_my_settings(user_id),
         "createBoard": lambda: create_board(args, user_id, authenticated, organisation_admin),
         "updateBoard": lambda: update_board(args, user_id, organisation_admin),
+        "deleteBoard": lambda: delete_board(args, user_id, organisation_admin),
         "createQuestion": lambda: create_question(args, user_id, authenticated, organisation_admin),
         "castVote": lambda: cast_vote(args, user_id), "addComment": lambda: add_comment(args, user_id),
         "addOfficialReply": lambda: add_official_reply(args, user_id, organisation_admin, author_name),

@@ -10,7 +10,7 @@ describe('AMA board', () => {
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async (_url: string, options: RequestInit) => {
       const query = JSON.parse(String(options.body)).query as string
       const question = { id: 'q1', boardId: 'all-company', body: 'What should we focus on?', authorDisplayName: 'Helpful Heron', category: 'Strategy', status: 'OPEN', upvotes: 4, downvotes: 0, comments: [], createdAt: new Date().toISOString() }
-      const data = query.includes('query Board') ? { getBoard: { id: 'all-company', title: 'Ask the leadership team', description: 'Demo', visibility: 'PUBLIC', postingPolicy: 'ANYONE', votingMode: 'UP_DOWN', commentsEnabled: true, visibleVoteTotals: true, anonymousPosting: true, canModerate: Boolean(sessionStorage.getItem('ama-board-session')) } }
+      const data = query.includes('query Board') ? { getBoard: { id: 'all-company', title: 'Ask the leadership team', description: 'Demo', visibility: 'PUBLIC', postingPolicy: 'ANYONE', votingMode: 'UP_DOWN', commentsEnabled: true, visibleVoteTotals: true, anonymousPosting: true, categories: ['Strategy', 'Product', 'Culture', 'People'], canModerate: Boolean(sessionStorage.getItem('ama-board-session')) } }
         : query.includes('query Questions') ? { listQuestions: { items: [question] } }
           : query.includes('mutation Post') ? { createQuestion: { ...question, id: 'new-question', body: JSON.parse(String(options.body)).variables.input.body } }
             : query.includes('mutation Present') ? { selectQuestion: { id: 'all-company', presentedQuestionId: 'q1' } }
@@ -119,13 +119,20 @@ describe('AMA board', () => {
     expect(submit).toBeDisabled()
   })
 
-  it('opens settings for an authenticated administrator', () => {
+  it('opens settings and saves configured board categories', async () => {
     window.history.replaceState({}, '', '/boards/all-company')
     sessionStorage.setItem('ama-board-session', JSON.stringify({ accessToken: 'access', idToken, email: 'admin@example.com', groups: ['Admins'] }))
     render(<App />)
     fireEvent.click(screen.getByRole('button', { name: /board settings/i }))
     expect(screen.getByRole('heading', { name: /board settings/i })).toBeInTheDocument()
     expect(window.location.pathname).toBe('/boards/all-company/settings')
+    const categoryInput = await screen.findByLabelText(/question categories/i)
+    fireEvent.change(categoryInput, { target: { value: 'Roadmap, Culture' } })
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([, options]) => {
+      const request = JSON.parse(String(options?.body))
+      return request.query.includes('mutation SaveBoard') && request.query.includes('categories') && request.variables.input.categories.join(',') === 'Roadmap,Culture'
+    })).toBe(true))
     fireEvent.click(screen.getByRole('button', { name: 'Participation' }))
     expect(screen.getByRole('heading', { name: /access and participation/i })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Moderators' }))
@@ -151,7 +158,7 @@ describe('AMA board', () => {
       const data = query.includes('ListBoards') ? { listBoards: [] }
         : query.includes('query Org') ? { getOrganizationSettings: { organizationName: 'Anyhow Only', defaultVisibility: 'UNLISTED', defaultVotingMode: 'UP_DOWN', membersCanCreateBoards: false } }
           : query.includes('CreateBoard') ? { createBoard: { id: 'new-board', title: 'Product AMA' } }
-            : query.includes('query Board') ? { getBoard: { id: 'new-board', title: 'Product AMA', description: '', visibility: 'UNLISTED', postingPolicy: 'ANYONE', votingMode: 'UP_DOWN', commentsEnabled: true, visibleVoteTotals: true, anonymousPosting: true } }
+            : query.includes('query Board') ? { getBoard: { id: 'new-board', title: 'Product AMA', description: '', visibility: 'UNLISTED', postingPolicy: 'ANYONE', votingMode: 'UP_DOWN', commentsEnabled: true, visibleVoteTotals: true, anonymousPosting: true, categories: ['Strategy', 'Product', 'Culture', 'People'] } }
               : {}
       return { ok: true, json: async () => ({ data }) }
     }))
@@ -160,6 +167,30 @@ describe('AMA board', () => {
     fireEvent.change(screen.getByPlaceholderText(/quarterly leadership/i), { target: { value: 'Product AMA' } })
     fireEvent.click(screen.getAllByRole('button', { name: 'Create board' })[1])
     await waitFor(() => expect(window.location.pathname).toBe('/boards/new-board/settings'))
+  })
+
+  it('deletes a board through an in-app confirmation dialog', async () => {
+    window.history.replaceState({}, '', '/admin')
+    sessionStorage.setItem('ama-board-session', JSON.stringify({ accessToken: 'access', idToken, email: 'admin@example.com', groups: ['Admins'] }))
+    const confirmSpy = vi.spyOn(window, 'confirm')
+    window.__AMA_BOARD_CONFIG__ = { appSyncEndpoint: 'https://appsync.example/graphql' }
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (_url: string, options: RequestInit) => {
+      const query = JSON.parse(String(options.body)).query
+      const data = query.includes('ListBoards') ? { listBoards: [{ id: 'board-to-delete', title: 'Old AMA', description: '', visibility: 'UNLISTED' }] }
+        : query.includes('query Org') ? { getOrganizationSettings: { organizationName: 'Anyhow Only', defaultVisibility: 'UNLISTED', defaultVotingMode: 'UP_DOWN', membersCanCreateBoards: false } }
+          : query.includes('DeleteBoard') ? { deleteBoard: { id: 'board-to-delete', title: 'Old AMA' } } : {}
+      return { ok: true, json: async () => ({ data }) }
+    }))
+    render(<App />)
+    fireEvent.click(screen.getByRole('button', { name: 'Boards' }))
+    fireEvent.click(await screen.findByRole('button', { name: /delete old ama/i }))
+    expect(screen.getByRole('dialog', { name: /delete board permanently/i })).toBeInTheDocument()
+    const deleteButton = screen.getByRole('button', { name: /^delete board$/i })
+    expect(deleteButton).toBeDisabled()
+    fireEvent.change(screen.getByLabelText(/type old ama to confirm/i), { target: { value: 'Old AMA' } })
+    fireEvent.click(deleteButton)
+    await waitFor(() => expect(screen.queryByText('Old AMA')).not.toBeInTheDocument())
+    expect(confirmSpy).not.toHaveBeenCalled()
   })
 
   it('opens the about page', () => {
