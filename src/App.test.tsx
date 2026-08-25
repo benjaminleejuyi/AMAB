@@ -56,6 +56,16 @@ describe('AMA board', () => {
     expect(screen.getByRole('button', { name: /end presentation/i })).toBeInTheDocument()
   })
 
+  it('opens sharing options with a copyable URL and QR code', async () => {
+    window.history.replaceState({}, '', '/boards/all-company')
+    render(<App />)
+    fireEvent.click(screen.getByRole('button', { name: /^share$/i }))
+    expect(screen.getByRole('dialog', { name: /share this board/i })).toBeInTheDocument()
+    expect(screen.getByDisplayValue('http://localhost:3000/boards/all-company')).toBeInTheDocument()
+    expect(screen.getByRole('img', { name: /qr code for .*all-company/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /download qr code/i })).toBeInTheDocument()
+  })
+
   it('lets an administrator post a separate official reply and closes the question', async () => {
     window.history.replaceState({}, '', '/boards/all-company')
     sessionStorage.setItem('ama-board-session', JSON.stringify({ accessToken: 'access', idToken, email: 'admin@example.com', groups: ['Admins'] }))

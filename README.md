@@ -30,6 +30,8 @@ DynamoDB stores boards and board settings, questions, comments, per-participant 
 
 Moderators, board owners, and organisation administrators can post one **Official reply** beneath a question. The reply is stored separately from participant comments and atomically changes the question to answered, closing further voting and commenting. These roles can also export a professional PDF report of every question and selectively include official replies, comments, vote totals, authors, and timestamps.
 
+Every board's **Share** dialog provides its canonical URL, a one-click copy action, a phone-scannable QR code, and an SVG download suitable for presentation slides or event signage. QR generation happens entirely in the browser, so the board URL is not sent to an external QR service.
+
 ## Deploy to AWS
 
 The infrastructure is configured to serve Askboard at `ama.anyhowonly.com` through Route 53, an ACM certificate, and CloudFront. The `anyhowonly.com` public hosted zone must already exist in the AWS account; the deployment script discovers it automatically or accepts `HOSTED_ZONE_ID` explicitly.

@@ -7,6 +7,7 @@ import {
 import type { Question, QuestionCategory } from './types'
 import { addOfficialReply, commentOnQuestion, completeNewPassword, createBoard, getBoard, getMySettings, getOrganizationSettings, getQuestions, inviteUser, listBoards, NewPasswordRequiredError, postQuestion, presentQuestion, readSession, saveBoard, saveMySettings, saveOrganizationSettings, signIn, signOut, voteQuestion, type AuthSession, type BoardSummary, type PersistedQuestion } from './auth'
 import { downloadBoardReport, type ReportOptions } from './pdf'
+import { qrSvg } from './qr'
 
 type SortMode = 'Top' | 'Newest' | 'Oldest'
 
@@ -98,10 +99,13 @@ function BoardPage({ boardId, navigate, session }: { boardId: string, navigate: 
   const [newCategory, setNewCategory] = useState<QuestionCategory>('Strategy')
   const [presenting, setPresenting] = useState<Question | null>(null)
   const [shareNotice, setShareNotice] = useState(false)
+  const [shareOpen, setShareOpen] = useState(false)
   const [canModerate, setCanModerate] = useState(false)
   const [exportOpen, setExportOpen] = useState(false)
   const [reportOptions, setReportOptions] = useState<ReportOptions>({ officialReplies: true, comments: true, votes: true, authors: true })
   const initials = session?.email.slice(0, 2).toUpperCase() ?? 'GU'
+  const boardUrl = `${window.location.origin}/boards/${boardId}`
+  const boardQr = useMemo(() => qrSvg(boardUrl), [boardUrl])
   const toQuestion = (item: PersistedQuestion, index = 0): Question => ({ id: item.id, author: item.authorDisplayName, avatar: item.authorDisplayName.split(' ').map(word => word[0]).join('').slice(0, 2), body: item.body, category: item.category as QuestionCategory, status: item.status === 'SELECTED' ? 'Selected' : item.status === 'ANSWERED' ? 'Answered' : 'Open', upvotes: item.upvotes, downvotes: item.downvotes, viewerVote: 0, comments: (item.comments || []).map(comment => ({ id: comment.id, author: comment.authorDisplayName, body: comment.body, time: new Date(comment.createdAt).toLocaleString() })), officialReply: item.officialReply ? { body: item.officialReply.body, author: item.officialReply.authorDisplayName, time: new Date(item.officialReply.createdAt).toLocaleString() } : undefined, createdAt: Date.parse(item.createdAt) || index })
   useEffect(() => {
     const token = session?.idToken
@@ -155,11 +159,10 @@ function BoardPage({ boardId, navigate, session }: { boardId: string, navigate: 
   }
 
   const shareBoard = async () => {
-    const url = `${window.location.origin}/boards/${boardId}`
     try {
-      await navigator.clipboard.writeText(url)
+      await navigator.clipboard.writeText(boardUrl)
     } catch {
-      window.history.replaceState({}, '', `/boards/${boardId}`)
+      const field = document.createElement('textarea'); field.value = boardUrl; document.body.appendChild(field); field.select(); document.execCommand('copy'); field.remove()
     }
     setShareNotice(true)
     window.setTimeout(() => setShareNotice(false), 2200)
@@ -170,7 +173,7 @@ function BoardPage({ boardId, navigate, session }: { boardId: string, navigate: 
       <header>
         <button className="brand brand-button" onClick={() => navigate('/')}><span><Sparkles size={20} /></span> AMA Board</button>
         <nav aria-label="Main navigation"><button className="active"><LayoutGrid size={17} /> Board</button><button onClick={() => navigate('/about')}><CircleHelp size={17} /> About</button></nav>
-        <div className="header-actions">{canModerate && <button className="share" onClick={() => setExportOpen(true)}><Download size={16} /> Export PDF</button>}<button className="share" onClick={shareBoard}><Share2 size={16} /> Share</button>{session && <button className="settings" onClick={() => navigate(`/boards/${boardId}/settings`)} aria-label="Board settings"><Settings size={18} /></button>}<button className="profile profile-button" title={session?.email ?? 'Guest'} onClick={() => navigate(session ? '/admin' : '/')}>{initials}</button></div>
+        <div className="header-actions">{canModerate && <button className="share" onClick={() => setExportOpen(true)}><Download size={16} /> Export PDF</button>}<button className="share" onClick={() => setShareOpen(true)}><Share2 size={16} /> Share</button>{session && <button className="settings" onClick={() => navigate(`/boards/${boardId}/settings`)} aria-label="Board settings"><Settings size={18} /></button>}<button className="profile profile-button" title={session?.email ?? 'Guest'} onClick={() => navigate(session ? '/admin' : '/')}>{initials}</button></div>
       </header>
 
       <main>
@@ -207,6 +210,8 @@ function BoardPage({ boardId, navigate, session }: { boardId: string, navigate: 
       </section></div>}
 
       {exportOpen && <div className="modal-backdrop" onMouseDown={() => setExportOpen(false)}><section className="export-dialog" role="dialog" aria-modal="true" aria-labelledby="export-title" onMouseDown={event => event.stopPropagation()}><button className="modal-close" onClick={() => setExportOpen(false)} aria-label="Close"><X size={20} /></button><span className="composer-icon"><Download size={22} /></span><h2 id="export-title">Export official report</h2><p>Select the details to include. Every report contains all questions and their status.</p>{([['officialReplies', 'Official replies'], ['comments', 'Comments'], ['votes', 'Upvotes and downvotes'], ['authors', 'Names and timestamps']] as const).map(([key, label]) => <label className="export-option" key={key}><input type="checkbox" checked={reportOptions[key]} onChange={event => setReportOptions(current => ({ ...current, [key]: event.target.checked }))} /><span><b>{label}</b></span></label>)}<div className="report-summary">Professional A4 report · {questions.length} questions · AMA Board branding</div><button className="dialog-primary" onClick={() => { downloadBoardReport(boardTitle, questions, reportOptions); setExportOpen(false) }}><Download size={17} /> Download PDF</button></section></div>}
+
+      {shareOpen && <div className="modal-backdrop" onMouseDown={() => setShareOpen(false)}><section className="share-dialog" role="dialog" aria-modal="true" aria-labelledby="share-title" onMouseDown={event => event.stopPropagation()}><button className="modal-close" onClick={() => setShareOpen(false)} aria-label="Close"><X size={20} /></button><span className="composer-icon"><Share2 size={22} /></span><h2 id="share-title">Share this board</h2><p>Copy the direct link or display the QR code during your AMA so participants can join from their phones.</p><label>Board URL<div className="share-url"><input value={boardUrl} readOnly onFocus={event => event.target.select()} /><button onClick={shareBoard}>{shareNotice ? <><Check size={16} /> Copied</> : 'Copy URL'}</button></div></label><div className="qr-panel"><div className="qr-code" dangerouslySetInnerHTML={{ __html: boardQr }} /><div><b>Scan to open the board</b><span>Works with the camera app on most phones.</span><button onClick={() => { const blob = new Blob([boardQr], { type: 'image/svg+xml' }); const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = `${boardId}-qr-code.svg`; link.click(); window.setTimeout(() => URL.revokeObjectURL(url), 1000) }}><Download size={15} /> Download QR code</button></div></div></section></div>}
 
       {presenting && <div className="presentation" role="dialog" aria-modal="true" aria-label="Presentation mode">
         <button className="end-presentation" onClick={() => setPresenting(null)}><X size={18} /> End presentation</button>
