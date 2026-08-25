@@ -28,15 +28,7 @@ Public and unlisted boards are in scope. Private boards, multi-organization tena
 
 DynamoDB stores boards and board settings, questions, comments, per-participant votes, the selected presentation question, moderator memberships, organisation defaults, and each signed-in user's posting-identity preference. Local React state only reflects AppSync responses, so refreshing a board reloads its questions and comments from DynamoDB instead of fixture data.
 
-Board administrators can configure board-specific question categories and delete non-demo boards from Board settings. Deleting a board also removes its questions, embedded comments, vote records, and membership records.
-
-The interactive demo at `/boards/demo` is deliberately isolated from AppSync and DynamoDB. Its questions, comments, votes, and presentation state are stored in browser `sessionStorage`, survive refreshes during that browser session, and can be cleared with **Reset demo**.
-
-### Live updates and question administration
-
-Real boards establish an authenticated AppSync WebSocket connection and subscribe to question, vote, comment, ordering, and presentation events. The client reports its connection state, reconnects with exponential backoff and jitter, detects stale heartbeats, refreshes Cognito credentials, and reloads authoritative board state after reconnecting so missed events are recovered.
-
-Signed-in board managers can edit question text and category, mark questions answered or archived, reopen them, delete questions and their vote records, and move questions into a manual order. These operations are authorized again in the Lambda resolver; displaying a control in the browser does not bypass backend role checks.
+Moderators, board owners, and organisation administrators can post one **Official reply** beneath a question. The reply is stored separately from participant comments and atomically changes the question to answered, closing further voting and commenting. These roles can also export a professional PDF report of every question and selectively include official replies, comments, vote totals, authors, and timestamps.
 
 ## Deploy to AWS
 
@@ -66,7 +58,7 @@ Set `ADMIN_EMAIL` to the initial organisation administrator when deploying. Cogn
 ADMIN_EMAIL=your.name@anyhowonly.com ./scripts/deploy.sh production
 ```
 
-The deployment generates the browser's Cognito and AppSync configuration from CloudFormation outputs. On the first login, the form handles Cognito's temporary-password challenge and asks the administrator to choose a permanent password. Once signed in, the administrator can open board settings and invite additional moderators by email.
+The deployment generates the browser's Cognito and AppSync configuration from CloudFormation outputs. On the first login, the form handles Cognito's temporary-password challenge and asks the administrator to choose a permanent password. Permanent passwords must contain at least 12 characters, including an uppercase letter, a lowercase letter, a number, and a symbol; the form displays and validates each requirement. Once signed in, the administrator can open board settings and invite additional moderators by email.
 
 Authenticated users keep their account identity in the top-right menu. Organization administrators receive an **Admin panel** entry inside that menu and an **Administration** tab in personal settings; regular members do not. Administrators use `/admin` for organization-wide users, board creation, and defaults, while board-specific controls remain under `/boards/<board-id>/settings`. Participant totals are not fabricated when analytics have not been connected.
 

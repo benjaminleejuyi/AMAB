@@ -1,12 +1,11 @@
-export type QuestionStatus = 'Open' | 'Selected' | 'Answered' | 'Archived'
-export type QuestionCategory = string
+export type QuestionStatus = 'Open' | 'Selected' | 'Answered'
+export type QuestionCategory = 'Strategy' | 'Product' | 'Culture' | 'People'
 
 export interface Comment {
   id: string
   author: string
   body: string
   time: string
-  hidden?: boolean
 }
 
 export interface Question {
@@ -20,6 +19,6 @@ export interface Question {
   downvotes: number
   viewerVote: -1 | 0 | 1
   comments: Comment[]
+  officialReply?: { body: string; author: string; time: string }
   createdAt: number
-  rank?: string
 }
