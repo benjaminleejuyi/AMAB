@@ -44,6 +44,7 @@ type QuestionConnection { items: [Question!]!, nextToken: String }
 type BoardMember { boardId: ID!, userId: ID!, role: BoardRole! }
 type OrganizationSettings { organizationName: String!, defaultVisibility: BoardVisibility!, defaultVotingMode: VotingMode!, membersCanCreateBoards: Boolean!, updatedAt: AWSDateTime }
 type UserSettings { userId: ID!, defaultIdentity: String!, updatedAt: AWSDateTime }
+type OrganizationUser { userId: ID!, email: AWSEmail!, status: String!, enabled: Boolean!, isAdmin: Boolean!, moderatedBoardIds: [ID!]! }
 
 input CreateQuestionInput { boardId: ID!, body: String!, category: String!, identifyAs: String }
 input CreateBoardInput { title: String!, description: String, visibility: BoardVisibility, postingPolicy: PostingPolicy, votingMode: VotingMode, commentsEnabled: Boolean, categories: [String!] }
@@ -58,6 +59,9 @@ type Mutation {
   createBoard(input: CreateBoardInput!): Board! @aws_cognito_user_pools
   updateBoard(input: UpdateBoardInput!): Board! @aws_cognito_user_pools
   deleteBoard(id: ID!): Board! @aws_cognito_user_pools
+  setUserAdmin(userId: ID!, enabled: Boolean!): OrganizationUser! @aws_cognito_user_pools
+  setUserModerator(boardId: ID!, userId: ID!, enabled: Boolean!): OrganizationUser! @aws_cognito_user_pools
+  inviteOrganizationUser(email: AWSEmail!): OrganizationUser! @aws_cognito_user_pools
   createQuestion(input: CreateQuestionInput!): Question! @aws_cognito_user_pools @aws_api_key
   castVote(input: CastVoteInput!): Question! @aws_cognito_user_pools @aws_api_key
   addComment(input: AddCommentInput!): Comment! @aws_cognito_user_pools @aws_api_key
@@ -74,6 +78,7 @@ type Query {
   listBoards: [Board!]! @aws_cognito_user_pools
   getOrganizationSettings: OrganizationSettings! @aws_cognito_user_pools
   getMySettings: UserSettings! @aws_cognito_user_pools
+  listUsers: [OrganizationUser!]! @aws_cognito_user_pools
   listQuestions(boardId: ID!, limit: Int): QuestionConnection! @aws_cognito_user_pools @aws_api_key
 }
 

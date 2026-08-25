@@ -5,7 +5,7 @@ export const initialQuestions: Question[] = [
     id: 'q1', author: 'Anonymous Alpaca', avatar: 'AA', category: 'Strategy', status: 'Selected',
     body: 'What are the three most important bets we’re making in the next twelve months?',
     upvotes: 42, downvotes: 2, viewerVote: 0, createdAt: 5,
-    comments: [{ id: 'c1', author: 'Morgan Chen', body: 'Would love to hear how customer feedback shaped these.', time: '8 min ago' }],
+    comments: [{ id: 'c1', author: 'Helpful Heron', body: 'Would love to hear how customer feedback shaped these.', time: '8 min ago' }],
   },
   {
     id: 'q2', author: 'Priya Nair', avatar: 'PN', category: 'Product', status: 'Open',

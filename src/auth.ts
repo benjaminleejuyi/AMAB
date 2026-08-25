@@ -108,11 +108,16 @@ export async function createBoard(title: string, description: string, idToken: s
 }
 
 export interface BoardSummary { id: string, title: string, description?: string, visibility: string }
+export interface OrganizationUser { userId: string, email: string, status: string, enabled: boolean, isAdmin: boolean, moderatedBoardIds: string[] }
 
 export async function listBoards(idToken: string): Promise<BoardSummary[]> {
   const data = await graphQL<{ listBoards: BoardSummary[] }>('query ListBoards { listBoards { id title description visibility } }', {}, idToken)
   return data.listBoards
 }
+export const listUsers = async (token: string) => (await graphQL<{ listUsers: OrganizationUser[] }>('query ListUsers { listUsers { userId email status enabled isAdmin moderatedBoardIds } }', {}, token)).listUsers
+export const setUserAdmin = async (userId: string, enabled: boolean, token: string) => (await graphQL<{ setUserAdmin: OrganizationUser }>('mutation SetUserAdmin($userId: ID!, $enabled: Boolean!) { setUserAdmin(userId: $userId, enabled: $enabled) { userId email status enabled isAdmin moderatedBoardIds } }', { userId, enabled }, token)).setUserAdmin
+export const setUserModerator = async (boardId: string, userId: string, enabled: boolean, token: string) => (await graphQL<{ setUserModerator: OrganizationUser }>('mutation SetUserModerator($boardId: ID!, $userId: ID!, $enabled: Boolean!) { setUserModerator(boardId: $boardId, userId: $userId, enabled: $enabled) { userId email status enabled isAdmin moderatedBoardIds } }', { boardId, userId, enabled }, token)).setUserModerator
+export const inviteOrganizationUser = async (email: string, token: string) => (await graphQL<{ inviteOrganizationUser: OrganizationUser }>('mutation InviteOrganizationUser($email: AWSEmail!) { inviteOrganizationUser(email: $email) { userId email status enabled isAdmin moderatedBoardIds } }', { email }, token)).inviteOrganizationUser
 
 export interface PersistedComment { id: string, authorDisplayName: string, body: string, createdAt: string }
 export interface PersistedOfficialReply { body: string, authorDisplayName: string, createdAt: string }

@@ -1,4 +1,4 @@
-export type QuestionStatus = 'Open' | 'Selected' | 'Answered'
+export type QuestionStatus = 'Open' | 'Selected' | 'Answered' | 'Archived'
 export type QuestionCategory = string
 
 export interface Comment {

@@ -206,6 +206,82 @@ def update_my_settings(args: dict, user_id: str) -> dict:
     return _public(item)
 
 
+def _member_board_ids(user_id: str) -> list[str]:
+    result, start_key, board_ids = None, None, []
+    while True:
+        parameters = {"FilterExpression": Attr("entity").eq("MEMBER") & Attr("userId").eq(user_id)}
+        if start_key:
+            parameters["ExclusiveStartKey"] = start_key
+        result = table.scan(**parameters)
+        board_ids.extend(item["boardId"] for item in result.get("Items", []) if item.get("role") == "MODERATOR")
+        start_key = result.get("LastEvaluatedKey")
+        if not start_key:
+            return sorted(set(board_ids))
+
+
+def _organization_user(cognito: object, user: dict, moderated_board_ids: list[str] | None = None) -> dict:
+    attributes = {item["Name"]: item["Value"] for item in user.get("Attributes", user.get("UserAttributes", []))}
+    username = user.get("Username") or user.get("username")
+    groups = cognito.admin_list_groups_for_user(UserPoolId=USER_POOL_ID, Username=username).get("Groups", [])
+    return {
+        "userId": username, "email": attributes.get("email", username), "status": user.get("UserStatus", "UNKNOWN"),
+        "enabled": user.get("Enabled", True), "isAdmin": any(group["GroupName"] == "Admins" for group in groups),
+        "moderatedBoardIds": moderated_board_ids if moderated_board_ids is not None else _member_board_ids(username),
+    }
+
+
+def list_users(organisation_admin: bool) -> list[dict]:
+    if not organisation_admin:
+        raise PermissionError("Organization administrator access is required")
+    cognito, users, token = boto3.client("cognito-idp"), [], None
+    while True:
+        parameters = {"UserPoolId": USER_POOL_ID}
+        if token:
+            parameters["PaginationToken"] = token
+        response = cognito.list_users(**parameters)
+        users.extend(response.get("Users", []))
+        token = response.get("PaginationToken")
+        if not token:
+            break
+    return sorted((_organization_user(cognito, user) for user in users), key=lambda user: user["email"].lower())
+
+
+def set_user_admin(args: dict, organisation_admin: bool, current_user_id: str) -> dict:
+    if not organisation_admin:
+        raise PermissionError("Organization administrator access is required")
+    if not args["enabled"] and args["userId"] == current_user_id:
+        raise PermissionError("You cannot remove your own administrator access")
+    cognito = boto3.client("cognito-idp")
+    operation = cognito.admin_add_user_to_group if args["enabled"] else cognito.admin_remove_user_from_group
+    operation(UserPoolId=USER_POOL_ID, Username=args["userId"], GroupName="Admins")
+    user = cognito.admin_get_user(UserPoolId=USER_POOL_ID, Username=args["userId"])
+    return _organization_user(cognito, user)
+
+
+def set_user_moderator(args: dict, user_id: str, organisation_admin: bool) -> dict:
+    _require_board_role(args["boardId"], user_id, owner_only=True, organisation_admin=organisation_admin)
+    key = {"PK": f"BOARD#{args['boardId']}", "SK": f"MEMBER#{args['userId']}"}
+    if args["enabled"]:
+        table.put_item(Item={**key, "entity": "MEMBER", "boardId": args["boardId"], "userId": args["userId"], "role": "MODERATOR"})
+    else:
+        table.delete_item(Key=key)
+    cognito = boto3.client("cognito-idp")
+    user = cognito.admin_get_user(UserPoolId=USER_POOL_ID, Username=args["userId"])
+    return _organization_user(cognito, user)
+
+
+def invite_organization_user(args: dict, organisation_admin: bool) -> dict:
+    if not organisation_admin:
+        raise PermissionError("Organization administrator access is required")
+    cognito = boto3.client("cognito-idp")
+    response = cognito.admin_create_user(
+        UserPoolId=USER_POOL_ID, Username=args["email"],
+        UserAttributes=[{"Name": "email", "Value": args["email"]}, {"Name": "email_verified", "Value": "true"}],
+        DesiredDeliveryMediums=["EMAIL"],
+    )
+    return _organization_user(cognito, response["User"], [])
+
+
 def create_question(args: dict, participant_id: str, authenticated: bool, organisation_admin: bool) -> dict:
     data, now = args["input"], _now()
     if not data["body"].strip() or len(data["body"]) > 280:
@@ -375,9 +451,13 @@ def handler(event: dict, _context: object) -> dict:
     handlers = {
         "getBoard": lambda: get_board(args, user_id, organisation_admin), "listBoards": lambda: list_boards(user_id, organisation_admin), "listQuestions": lambda: list_questions(args),
         "getOrganizationSettings": get_organisation_settings, "getMySettings": lambda: get_my_settings(user_id),
+        "listUsers": lambda: list_users(organisation_admin),
         "createBoard": lambda: create_board(args, user_id, authenticated, organisation_admin),
         "updateBoard": lambda: update_board(args, user_id, organisation_admin),
         "deleteBoard": lambda: delete_board(args, user_id, organisation_admin),
+        "setUserAdmin": lambda: set_user_admin(args, organisation_admin, user_id),
+        "setUserModerator": lambda: set_user_moderator(args, user_id, organisation_admin),
+        "inviteOrganizationUser": lambda: invite_organization_user(args, organisation_admin),
         "createQuestion": lambda: create_question(args, user_id, authenticated, organisation_admin),
         "castVote": lambda: cast_vote(args, user_id), "addComment": lambda: add_comment(args, user_id),
         "addOfficialReply": lambda: add_official_reply(args, user_id, organisation_admin, author_name),

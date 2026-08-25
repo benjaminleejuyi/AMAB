@@ -2,16 +2,18 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   ArrowDown, ArrowRight, ArrowUp, BarChart3, Check, ChevronDown, CircleHelp, Globe2,
   Download, LayoutGrid, LockKeyhole, LogOut, MessageCircle, MoreHorizontal, Plus, Presentation, Search,
-  Send, Settings, Share2, ShieldCheck, Sparkles, Trash2, UserCog, Users, X,
+  Send, Settings, Share2, ShieldCheck, Sparkles, Trash2, UserCog, X,
 } from 'lucide-react'
 import type { Question, QuestionCategory } from './types'
-import { addOfficialReply, commentOnQuestion, completeNewPassword, createBoard, deleteBoard, getBoard, getMySettings, getOrganizationSettings, getQuestions, inviteUser, listBoards, NewPasswordRequiredError, postQuestion, presentQuestion, readSession, saveBoard, saveMySettings, saveOrganizationSettings, signIn, signOut, voteQuestion, type AuthSession, type BoardSummary, type PersistedQuestion } from './auth'
+import { addOfficialReply, commentOnQuestion, completeNewPassword, createBoard, deleteBoard, getBoard, getMySettings, getOrganizationSettings, getQuestions, inviteOrganizationUser, inviteUser, listBoards, listUsers, NewPasswordRequiredError, postQuestion, presentQuestion, readSession, saveBoard, saveMySettings, saveOrganizationSettings, setUserAdmin, setUserModerator, signIn, signOut, voteQuestion, type AuthSession, type BoardSummary, type OrganizationUser, type PersistedQuestion } from './auth'
 import { downloadBoardReport, type ReportOptions } from './pdf'
 import { qrSvg } from './qr'
+import { initialQuestions } from './data'
 
 type SortMode = 'Top' | 'Newest' | 'Oldest'
 
 const defaultCategories: QuestionCategory[] = ['Strategy', 'Product', 'Culture', 'People']
+const cloneDemoQuestions = () => initialQuestions.map(question => ({ ...question, comments: question.comments.map(comment => ({ ...comment })) }))
 
 function QuestionCard({ question, canModerate, onVote, onPresent, onComment, onOfficialReply }: {
   question: Question
@@ -88,11 +90,13 @@ function QuestionCard({ question, canModerate, onVote, onPresent, onComment, onO
 }
 
 function BoardPage({ boardId, navigate, session }: { boardId: string, navigate: (path: string) => void, session: AuthSession | null }) {
-  const [questions, setQuestions] = useState<Question[]>([])
-  const [boardTitle, setBoardTitle] = useState('Loading board…')
+  const isDemo = boardId === 'demo'
+  const [questions, setQuestions] = useState<Question[]>(isDemo ? cloneDemoQuestions : [])
+  const [boardTitle, setBoardTitle] = useState(isDemo ? 'Interactive leadership AMA' : 'Loading board…')
   const [boardError, setBoardError] = useState('')
   const [boardCategories, setBoardCategories] = useState<QuestionCategory[]>(defaultCategories)
   const [category, setCategory] = useState<QuestionCategory | 'All'>('All')
+  const [statusFilter, setStatusFilter] = useState<'All' | 'Unanswered' | 'Archived'>('All')
   const [sort, setSort] = useState<SortMode>('Top')
   const [query, setQuery] = useState('')
   const [composerOpen, setComposerOpen] = useState(false)
@@ -107,28 +111,32 @@ function BoardPage({ boardId, navigate, session }: { boardId: string, navigate: 
   const initials = session?.email.slice(0, 2).toUpperCase() ?? 'GU'
   const boardUrl = `${window.location.origin}/boards/${boardId}`
   const boardQr = useMemo(() => qrSvg(boardUrl), [boardUrl])
-  const toQuestion = (item: PersistedQuestion, index = 0): Question => ({ id: item.id, author: item.authorDisplayName, avatar: item.authorDisplayName.split(' ').map(word => word[0]).join('').slice(0, 2), body: item.body, category: item.category as QuestionCategory, status: item.status === 'SELECTED' ? 'Selected' : item.status === 'ANSWERED' ? 'Answered' : 'Open', upvotes: item.upvotes, downvotes: item.downvotes, viewerVote: 0, comments: (item.comments || []).map(comment => ({ id: comment.id, author: comment.authorDisplayName, body: comment.body, time: new Date(comment.createdAt).toLocaleString() })), officialReply: item.officialReply ? { body: item.officialReply.body, author: item.officialReply.authorDisplayName, time: new Date(item.officialReply.createdAt).toLocaleString() } : undefined, createdAt: Date.parse(item.createdAt) || index })
+  const toQuestion = (item: PersistedQuestion, index = 0): Question => ({ id: item.id, author: item.authorDisplayName, avatar: item.authorDisplayName.split(' ').map(word => word[0]).join('').slice(0, 2), body: item.body, category: item.category as QuestionCategory, status: item.status === 'SELECTED' ? 'Selected' : item.status === 'ANSWERED' ? 'Answered' : item.status === 'ARCHIVED' ? 'Archived' : 'Open', upvotes: item.upvotes, downvotes: item.downvotes, viewerVote: 0, comments: (item.comments || []).map(comment => ({ id: comment.id, author: comment.authorDisplayName, body: comment.body, time: new Date(comment.createdAt).toLocaleString() })), officialReply: item.officialReply ? { body: item.officialReply.body, author: item.officialReply.authorDisplayName, time: new Date(item.officialReply.createdAt).toLocaleString() } : undefined, createdAt: Date.parse(item.createdAt) || index })
   useEffect(() => {
+    if (isDemo) return
     const token = session?.idToken
     Promise.all([getBoard(boardId, token), getQuestions(boardId, token)]).then(([board, items]) => { setBoardTitle(board.title); setBoardCategories(board.categories); setNewCategory(board.categories[0] || 'General'); setCanModerate(board.canModerate); setQuestions(items.map(toQuestion)); setBoardError('') }).catch(reason => setBoardError(reason instanceof Error ? reason.message : 'Could not load this board.'))
-  }, [boardId, session?.idToken])
+  }, [boardId, isDemo, session?.idToken])
 
   const visibleQuestions = useMemo(() => questions
     .filter(item => category === 'All' || item.category === category)
+    .filter(item => statusFilter === 'All' || (statusFilter === 'Unanswered' && ['Open', 'Selected'].includes(item.status)) || (statusFilter === 'Archived' && ['Answered', 'Archived'].includes(item.status)))
     .filter(item => item.body.toLowerCase().includes(query.toLowerCase()))
     .sort((a, b) => sort === 'Top' ? (b.upvotes - b.downvotes) - (a.upvotes - a.downvotes) : sort === 'Newest' ? b.createdAt - a.createdAt : a.createdAt - b.createdAt),
-  [questions, category, query, sort])
+  [questions, category, statusFilter, query, sort])
 
   const vote = async (id: string, nextVote: -1 | 1) => {
     const currentQuestion = questions.find(item => item.id === id)
     if (!currentQuestion) return
     const voteValue = currentQuestion.viewerVote === nextVote ? 0 : nextVote
+    if (isDemo) { setQuestions(current => current.map(item => item.id === id ? { ...item, upvotes: item.upvotes - Number(item.viewerVote === 1) + Number(voteValue === 1), downvotes: item.downvotes - Number(item.viewerVote === -1) + Number(voteValue === -1), viewerVote: voteValue } : item)); return }
     try {
       const saved = await voteQuestion(boardId, id, voteValue, session?.idToken)
       setQuestions(current => current.map(item => item.id === id ? { ...item, upvotes: saved.upvotes, downvotes: saved.downvotes, viewerVote: voteValue } : item))
     } catch (reason) { setBoardError(reason instanceof Error ? reason.message : 'Could not save vote.') }
   }
   const addComment = async (id: string, body: string) => {
+    if (isDemo) { setQuestions(current => current.map(item => item.id === id ? { ...item, comments: [...item.comments, { id: crypto.randomUUID(), author: 'Demo Participant', body, time: 'Just now' }] } : item)); return }
     try {
       const saved = await commentOnQuestion(boardId, id, body, session?.idToken)
       setQuestions(current => current.map(item => item.id === id ? { ...item, comments: [...item.comments, { id: saved.id, author: saved.authorDisplayName, body: saved.body, time: 'Just now' }] } : item))
@@ -137,6 +145,7 @@ function BoardPage({ boardId, navigate, session }: { boardId: string, navigate: 
 
   const submitQuestion = async () => {
     if (!newQuestion.trim()) return
+    if (isDemo) { setQuestions(current => [{ id: crypto.randomUUID(), author: 'Helpful Heron', avatar: 'HH', body: newQuestion.trim(), category: newCategory, status: 'Open', upvotes: 0, downvotes: 0, viewerVote: 0, comments: [], createdAt: Date.now() }, ...current]); setNewQuestion(''); setComposerOpen(false); return }
     try {
       const saved = await postQuestion(boardId, newQuestion.trim(), newCategory, session?.idToken)
       setQuestions(current => [toQuestion(saved), ...current]); setNewQuestion(''); setComposerOpen(false)
@@ -154,6 +163,7 @@ function BoardPage({ boardId, navigate, session }: { boardId: string, navigate: 
   const startPresentation = async (id: string) => {
     const selected = questions.find(item => item.id === id)
     if (!selected) return
+    if (isDemo) { setQuestions(current => current.map(item => ({ ...item, status: item.id === id ? 'Selected' : item.status === 'Selected' ? 'Open' : item.status }))); setPresenting(selected); return }
     if (!session) { setBoardError('Sign in as a moderator to use presentation mode.'); return }
     try { await presentQuestion(boardId, id, session.idToken); setQuestions(current => current.map(item => ({ ...item, status: item.id === id ? 'Selected' : item.status === 'Selected' ? 'Open' : item.status }))); setPresenting(selected) }
     catch (reason) { setBoardError(reason instanceof Error ? reason.message : 'Could not select the question.') }
@@ -178,6 +188,7 @@ function BoardPage({ boardId, navigate, session }: { boardId: string, navigate: 
       </header>
 
       <main>
+        {isDemo && <div className="demo-notice" role="status"><span><b>Interactive demo</b> — try posting, voting, commenting, and presenting. Changes reset when you leave.</span><button onClick={() => { setQuestions(cloneDemoQuestions()); setStatusFilter('All'); setCategory('All') }}>Reset demo</button></div>}
         {boardError && <div className="page-error" role="alert">{boardError}</div>}
         <section className="hero">
           <div className="eyebrow"><span className="pulse" /> LIVE AMA · ALL COMPANY</div>
@@ -185,11 +196,10 @@ function BoardPage({ boardId, navigate, session }: { boardId: string, navigate: 
             <div><h1>{boardTitle}</h1><p>Vote for what matters. We’ll answer the most important questions live.</p></div>
             <button className="ask-button" onClick={() => setComposerOpen(true)}><Plus size={20} /> Ask a question</button>
           </div>
-          <div className="board-meta"><span>Hosted by <b>Morgan Chen</b></span><span>Friday, 2:00 PM</span><span>128 participants</span></div>
         </section>
 
         <section className="toolbar">
-          <div className="category-tabs">{['All', ...boardCategories].map(item => <button key={item} className={category === item ? 'active' : ''} onClick={() => setCategory(item)}>{item}</button>)}</div>
+          <div><div className="status-tabs" aria-label="Question status filters">{(['All', 'Unanswered', 'Archived'] as const).map(item => <button key={item} className={statusFilter === item ? 'active' : ''} onClick={() => setStatusFilter(item)}>{item}</button>)}</div><div className="category-tabs" aria-label="Question category filters">{['All', ...boardCategories].map(item => <button key={item} className={category === item ? 'active' : ''} onClick={() => setCategory(item)}>{item}</button>)}</div></div>
           <div className="tools">
             <label className="search"><Search size={17} /><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search questions" /></label>
             <label className="sort">Sort: <select value={sort} onChange={event => setSort(event.target.value as SortMode)}><option>Top</option><option>Newest</option><option>Oldest</option></select><ChevronDown size={15} /></label>
@@ -233,7 +243,7 @@ function AccountMenu({ session, navigate, onSignOut }: { session: AuthSession, n
 function PublicHeader({ navigate, onLogin, session, onSignOut }: { navigate: (path: string) => void, onLogin: () => void, session: AuthSession | null, onSignOut: () => void }) {
   return <header className="public-header">
     <button className="brand brand-button" onClick={() => navigate('/')}><span><Sparkles size={20} /></span> AMA Board</button>
-    <nav aria-label="Main navigation"><button onClick={() => navigate('/about')}>About</button><button onClick={() => navigate('/boards/all-company')}>View demo</button></nav>
+    <nav aria-label="Main navigation"><button onClick={() => navigate('/about')}>About</button><button onClick={() => navigate('/boards/demo')}>View demo</button></nav>
     {session ? <AccountMenu session={session} navigate={navigate} onSignOut={onSignOut} /> : <button className="login-button" onClick={onLogin}>Log in <ArrowRight size={16} /></button>}
   </header>
 }
@@ -287,7 +297,7 @@ function LandingPage({ navigate, onSignedIn, session, onSignOut }: { navigate: (
         <div className="landing-copy"><div className="marketing-eyebrow"><Sparkles size={14} /> Better conversations, together</div>
           <h1>Give every question<br /><em>a place to be heard.</em></h1>
           <p>Run focused AMAs where people ask freely, vote together, and leaders answer what matters most.</p>
-          <div className="landing-actions"><button onClick={() => setLoginOpen(true)}>Create your board <ArrowRight size={18} /></button><button onClick={() => navigate('/boards/all-company')}>Explore the demo</button></div>
+          <div className="landing-actions"><button onClick={() => navigate('/boards/demo')}>Explore the interactive demo <ArrowRight size={18} /></button></div>
           <div className="trust-line"><span><Check size={14} /> Anonymous by choice</span><span><Check size={14} /> Live voting</span><span><Check size={14} /> Presentation ready</span></div>
         </div>
         <div className="hero-visual" aria-label="AMA Board product preview">
@@ -295,7 +305,7 @@ function LandingPage({ navigate, onSignedIn, session, onSignOut }: { navigate: (
             <div className="mini-question featured"><b>Strategy</b><p>What are the most important bets we’re making this year?</p><span>↑ 42</span></div>
             <div className="mini-question"><b>Culture</b><p>What should we protect as our team grows?</p><span>↑ 27</span></div>
             <div className="mini-question"><b>Product</b><p>How is customer feedback shaping the roadmap?</p><span>↑ 19</span></div>
-          </div><div className="floating-card"><Users size={18} /><div><strong>128 voices</strong><span>One shared conversation</span></div></div>
+          </div>
         </div>
       </section>
       <section className="feature-strip"><div><MessageCircle /><h3>Ask safely</h3><p>Use your name or a friendly pseudonym.</p></div><div><BarChart3 /><h3>Prioritise together</h3><p>Visible voting brings the key topics forward.</p></div><div><Presentation /><h3>Answer with focus</h3><p>Move any question into presentation mode.</p></div></section>
@@ -309,7 +319,7 @@ function AboutPage({ navigate, onSignedIn, session, onSignOut }: { navigate: (pa
   return <div className="marketing-shell"><PublicHeader navigate={navigate} onLogin={() => setLoginOpen(true)} session={session} onSignOut={onSignOut} />
     <main className="simple-page"><div className="marketing-eyebrow">About AMA Board</div><h1>Honest questions make<br />stronger organisations.</h1><p className="page-lead">AMA Board creates an open, organised space for every voice—before, during, and after your AMA.</p>
       <section className="values-grid"><article><Globe2 /><h2>Open by default</h2><p>Public and unlisted boards make it effortless to join while administrators stay in control.</p></article><article><ShieldCheck /><h2>Safe to speak</h2><p>Participants can identify themselves or use a consistent, friendly pseudonym.</p></article><article><Presentation /><h2>Built for the room</h2><p>Present the selected question clearly without losing the live audience conversation.</p></article></section>
-      <button className="page-cta" onClick={() => navigate('/boards/all-company')}>See AMA Board in action <ArrowRight size={18} /></button>
+      <button className="page-cta" onClick={() => navigate('/boards/demo')}>See AMA Board in action <ArrowRight size={18} /></button>
     </main>{loginOpen && <LoginDialog onClose={() => setLoginOpen(false)} onSignedIn={onSignedIn} />}</div>
 }
 
@@ -385,13 +395,18 @@ function AdminPage({ navigate, session, onSignOut }: { navigate: (path: string) 
   const [boardToDelete, setBoardToDelete] = useState<BoardSummary | null>(null)
   const [deleteConfirmation, setDeleteConfirmation] = useState('')
   const [deleteStatus, setDeleteStatus] = useState('')
+  const [users, setUsers] = useState<OrganizationUser[]>([])
+  const [usersStatus, setUsersStatus] = useState('Loading users…')
+  const [userToManage, setUserToManage] = useState<OrganizationUser | null>(null)
+  const [roleStatus, setRoleStatus] = useState('')
   useEffect(() => {
     listBoards(session.idToken).then(items => { setBoards(items); setBoardsStatus(items.length ? '' : 'No boards yet. Create your first board.') }).catch(reason => setBoardsStatus(reason instanceof Error ? reason.message : 'Could not load boards.'))
     getOrganizationSettings(session.idToken).then(settings => { setOrganizationName(String(settings.organizationName)); setDefaultVisibility(String(settings.defaultVisibility)); setDefaultVotingMode(String(settings.defaultVotingMode)); setMembersCanCreateBoards(Boolean(settings.membersCanCreateBoards)) }).catch(reason => setOrganizationStatus(reason instanceof Error ? reason.message : 'Could not load organisation settings.'))
+    listUsers(session.idToken).then(items => { setUsers(items); setUsersStatus(items.length ? '' : 'No users found.') }).catch(reason => setUsersStatus(reason instanceof Error ? reason.message : 'Could not load users.'))
   }, [session.idToken])
   const addUser = async () => {
     setStatus('Sending…')
-    try { await inviteUser('all-company', email, session.idToken); setStatus(`Invitation sent to ${email}`); setEmail('') }
+    try { const invited = await inviteOrganizationUser(email, session.idToken); setUsers(current => [...current, invited]); setStatus(`Invitation sent to ${email}`); setEmail('') }
     catch (reason) { setStatus(reason instanceof Error ? reason.message : 'Could not invite user.') }
   }
   const addBoard = async () => {
@@ -416,15 +431,27 @@ function AdminPage({ navigate, session, onSignOut }: { navigate: (path: string) 
       setBoardsStatus(boards.length === 1 ? 'No boards yet. Create your first board.' : '')
     } catch (reason) { setDeleteStatus(reason instanceof Error ? reason.message : 'Could not delete the board.') }
   }
+  const changeAdminRole = async (enabled: boolean) => {
+    if (!userToManage) return
+    setRoleStatus('Saving administrator access…')
+    try { const updated = await setUserAdmin(userToManage.userId, enabled, session.idToken); setUsers(current => current.map(user => user.userId === updated.userId ? updated : user)); setUserToManage(updated); setRoleStatus('Administrator access updated.') }
+    catch (reason) { setRoleStatus(reason instanceof Error ? reason.message : 'Could not update administrator access.') }
+  }
+  const changeModeratorRole = async (boardId: string, enabled: boolean) => {
+    if (!userToManage) return
+    setRoleStatus('Saving moderator access…')
+    try { const updated = await setUserModerator(boardId, userToManage.userId, enabled, session.idToken); setUsers(current => current.map(user => user.userId === updated.userId ? updated : user)); setUserToManage(updated); setRoleStatus('Moderator access updated.') }
+    catch (reason) { setRoleStatus(reason instanceof Error ? reason.message : 'Could not update moderator access.') }
+  }
   return <div className="settings-shell"><header><button className="brand brand-button" onClick={() => navigate('/')}><span><Sparkles size={20} /></span> AMA Board</button><span className="admin-label">Site administration</span><button className="logout-button" onClick={onSignOut}><LogOut size={16} /> Log out</button><span className="profile">{session.email.slice(0, 2).toUpperCase()}</span></header>
     <main className="settings-page"><div className="settings-title"><div><span>Organisation console</span><h1>Administration</h1><p>Manage boards, users, and site-wide defaults.</p></div><button onClick={() => { setTab('Boards'); setCreating(true) }}><Plus size={17} /> Create board</button></div>
       <section className="settings-grid"><aside>{(['Overview', 'Boards', 'Users', 'Organisation'] as const).map(item => <button key={item} className={tab === item ? 'active' : ''} onClick={() => setTab(item)}>{item}</button>)}</aside><div className="settings-panels">
         {tab === 'Overview' && <><section className="admin-stats"><article><b>{boards.length}</b><span>Boards</span></article><article><b>1</b><span>Administrator</span></article><article><b>—</b><span>Participant analytics not connected</span></article></section><article><h2>Welcome, {session.email}</h2><p>Use this console for organisation-wide administration. Settings for an individual AMA live on that board's settings page.</p>{boardsStatus && <p role="status">{boardsStatus}</p>}</article></>}
-        {tab === 'Boards' && <article><h2>Boards</h2><p>Create a board or open an existing board's settings.</p>{creating && <div className="create-board-form"><label>Board title <small>Required · maximum 120 characters</small><input required maxLength={120} autoFocus value={boardTitle} onChange={event => setBoardTitle(event.target.value)} placeholder="e.g. Quarterly leadership AMA" /></label><label>Description <small>Optional · maximum 1000 characters</small><textarea maxLength={1000} value={boardDescription} onChange={event => setBoardDescription(event.target.value)} placeholder="What should participants know?" /></label><div><button onClick={() => setCreating(false)}>Cancel</button><button disabled={!boardTitle.trim() || boardStatus === 'Creating…'} onClick={addBoard}>Create board</button></div>{boardStatus && <p role="status">{boardStatus}</p>}</div>}{boardsStatus && <p role="status">{boardsStatus}</p>}{boards.map(board => <div className="board-admin-row" key={board.id}><div><b>{board.title}</b><span>{board.visibility.toLowerCase()} · accepting questions</span></div><div className="board-row-actions"><button onClick={() => navigate(`/boards/${board.id}/settings`)}>Manage board</button><button className="delete-board-button" aria-label={`Delete ${board.title}`} onClick={() => { setBoardToDelete(board); setDeleteConfirmation(''); setDeleteStatus('') }}><Trash2 size={15} /> Delete</button></div></div>)}</article>}
-        {tab === 'Users' && <article><h2>Users</h2><p>Enter a complete email address. Cognito sends the user a temporary password, and they must choose a permanent password that meets the displayed security requirements at first sign-in.</p><div className="member-row"><span className="profile">{session.email.slice(0, 2).toUpperCase()}</span><div><b>{session.email}</b><small>Initial administrator</small></div><strong>Admin</strong></div><div className="invite-row"><input required type="email" value={email} onChange={event => setEmail(event.target.value)} placeholder="new.user@company.com" aria-label="New user email address" /><button disabled={!email} onClick={addUser}>Invite user</button></div>{status && <p role="status">{status}</p>}</article>}
+        {tab === 'Boards' && <article><h2>Boards</h2><p>Create a board, open its participant view, or manage its settings and access.</p>{creating && <div className="create-board-form"><label>Board title <small>Required · maximum 120 characters</small><input required maxLength={120} autoFocus value={boardTitle} onChange={event => setBoardTitle(event.target.value)} placeholder="e.g. Quarterly leadership AMA" /></label><label>Description <small>Optional · maximum 1000 characters</small><textarea maxLength={1000} value={boardDescription} onChange={event => setBoardDescription(event.target.value)} placeholder="What should participants know?" /></label><div><button onClick={() => setCreating(false)}>Cancel</button><button disabled={!boardTitle.trim() || boardStatus === 'Creating…'} onClick={addBoard}>Create board</button></div>{boardStatus && <p role="status">{boardStatus}</p>}</div>}{boardsStatus && <p role="status">{boardsStatus}</p>}{boards.map(board => <div className="board-admin-row" key={board.id}><div><b>{board.title}</b><span>{board.description || 'No description'} · {board.visibility.toLowerCase()}</span></div><div className="board-row-actions"><button onClick={() => navigate(`/boards/${board.id}`)}>Open board</button><button onClick={() => navigate(`/boards/${board.id}/settings`)}>Settings</button><button className="delete-board-button" aria-label={`Delete ${board.title}`} onClick={() => { setBoardToDelete(board); setDeleteConfirmation(''); setDeleteStatus('') }}><Trash2 size={15} /> Delete</button></div></div>)}</article>}
+        {tab === 'Users' && <article><h2>Users and roles</h2><p>All Cognito users are shown here. Invite members, grant organisation administrator access, or assign board-specific moderator access.</p><div className="invite-row"><input required type="email" value={email} onChange={event => setEmail(event.target.value)} placeholder="new.user@company.com" aria-label="New user email address" /><button disabled={!email} onClick={addUser}>Invite user</button></div>{status && <p role="status">{status}</p>}{usersStatus && <p role="status">{usersStatus}</p>}<div className="user-list">{users.map(user => <div className="user-admin-row" key={user.userId}><span className="profile">{user.email.slice(0, 2).toUpperCase()}</span><div><b>{user.email}</b><small>{user.status.replaceAll('_', ' ').toLowerCase()} · {user.enabled ? 'enabled' : 'disabled'}</small><span className="role-badges">{user.isAdmin && <i>Administrator</i>}{user.moderatedBoardIds.length > 0 && <i>{user.moderatedBoardIds.length} moderated {user.moderatedBoardIds.length === 1 ? 'board' : 'boards'}</i>}{!user.isAdmin && user.moderatedBoardIds.length === 0 && <i>Member</i>}</span></div><button onClick={() => { setUserToManage(user); setRoleStatus('') }}><UserCog size={15} /> Manage roles</button></div>)}</div></article>}
         {tab === 'Organisation' && <article><h2>Organisation settings</h2><p>Defaults used when administrators create new AMA boards.</p><label>Organisation name<input value={organizationName} onChange={event => setOrganizationName(event.target.value)} /></label><label>Default board visibility<select value={defaultVisibility} onChange={event => setDefaultVisibility(event.target.value)}><option value="UNLISTED">Unlisted — link only</option><option value="PUBLIC">Public</option></select></label><label>Default voting<select value={defaultVotingMode} onChange={event => setDefaultVotingMode(event.target.value)}><option value="UP_DOWN">Upvotes and downvotes</option><option value="UPVOTE">Upvotes only</option><option value="NONE">No voting</option></select></label><div className="setting-row"><div><b>Members can create boards</b><span>Allow non-administrators to create new AMA boards.</span></div><button className={`switch ${membersCanCreateBoards ? 'on' : ''}`} onClick={() => setMembersCanCreateBoards(!membersCanCreateBoards)} aria-label="Members can create boards"><i /></button></div><button className="page-cta" onClick={persistOrganization}>Save organisation settings</button>{organizationStatus && <p role="status">{organizationStatus}</p>}</article>}
       </div></section>
-    </main>{boardToDelete && <div className="modal-backdrop" onMouseDown={() => setBoardToDelete(null)}><section className="delete-dialog" role="dialog" aria-modal="true" aria-labelledby="delete-board-title" onMouseDown={event => event.stopPropagation()}><button className="modal-close" onClick={() => setBoardToDelete(null)} aria-label="Close"><X size={20} /></button><span className="danger-icon"><Trash2 size={22} /></span><h2 id="delete-board-title">Delete board permanently?</h2><p>This permanently deletes <b>{boardToDelete.title}</b>, including every question, official reply, comment, vote, and moderator assignment. This action cannot be undone.</p><label>Type <b>{boardToDelete.title}</b> to confirm<input autoFocus value={deleteConfirmation} onChange={event => setDeleteConfirmation(event.target.value)} /></label>{deleteStatus && <p className="delete-status" role="status">{deleteStatus}</p>}<div className="delete-dialog-actions"><button onClick={() => setBoardToDelete(null)}>Cancel</button><button disabled={deleteConfirmation !== boardToDelete.title || deleteStatus.startsWith('Deleting')} onClick={removeBoard}><Trash2 size={15} /> Delete board</button></div></section></div>}</div>
+    </main>{boardToDelete && <div className="modal-backdrop" onMouseDown={() => setBoardToDelete(null)}><section className="delete-dialog" role="dialog" aria-modal="true" aria-labelledby="delete-board-title" onMouseDown={event => event.stopPropagation()}><button className="modal-close" onClick={() => setBoardToDelete(null)} aria-label="Close"><X size={20} /></button><span className="danger-icon"><Trash2 size={22} /></span><h2 id="delete-board-title">Delete board permanently?</h2><p>This permanently deletes <b>{boardToDelete.title}</b>, including every question, official reply, comment, vote, and moderator assignment. This action cannot be undone.</p><label>Type <b>{boardToDelete.title}</b> to confirm<input autoFocus value={deleteConfirmation} onChange={event => setDeleteConfirmation(event.target.value)} /></label>{deleteStatus && <p className="delete-status" role="status">{deleteStatus}</p>}<div className="delete-dialog-actions"><button onClick={() => setBoardToDelete(null)}>Cancel</button><button disabled={deleteConfirmation !== boardToDelete.title || deleteStatus.startsWith('Deleting')} onClick={removeBoard}><Trash2 size={15} /> Delete board</button></div></section></div>}{userToManage && <div className="modal-backdrop" onMouseDown={() => setUserToManage(null)}><section className="role-dialog" role="dialog" aria-modal="true" aria-labelledby="manage-roles-title" onMouseDown={event => event.stopPropagation()}><button className="modal-close" onClick={() => setUserToManage(null)} aria-label="Close"><X size={20} /></button><span className="composer-icon"><UserCog size={22} /></span><h2 id="manage-roles-title">Manage roles</h2><p>{userToManage.email}</p><div className="role-section"><div><b>Organisation administrator</b><span>Can manage all boards, users, roles, and organisation settings.</span></div><button className={`switch ${userToManage.isAdmin ? 'on' : ''}`} onClick={() => changeAdminRole(!userToManage.isAdmin)} aria-label="Organisation administrator"><i /></button></div><div className="moderated-boards"><h3>Board moderator access</h3><p>Moderators can organise questions, post official replies, present, and export reports for selected boards.</p>{boards.map(board => <label key={board.id}><input type="checkbox" checked={userToManage.moderatedBoardIds.includes(board.id)} onChange={event => changeModeratorRole(board.id, event.target.checked)} /><span><b>{board.title}</b><small>{board.visibility.toLowerCase()}</small></span></label>)}{boards.length === 0 && <p>No boards are available.</p>}</div>{roleStatus && <p role="status">{roleStatus}</p>}<button className="dialog-primary" onClick={() => setUserToManage(null)}>Done</button></section></div>}</div>
 }
 
 export function App() {

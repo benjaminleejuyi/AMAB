@@ -16,6 +16,7 @@ describe('AMA board', () => {
             : query.includes('mutation Present') ? { selectQuestion: { id: 'all-company', presentedQuestionId: 'q1' } }
               : query.includes('mutation OfficialReply') ? { addOfficialReply: { id: 'q1', status: 'ANSWERED', officialReply: { body: JSON.parse(String(options.body)).variables.input.body, authorDisplayName: 'admin@example.com', createdAt: new Date().toISOString() } } }
               : query.includes('query ListBoards') ? { listBoards: [] }
+                : query.includes('query ListUsers') ? { listUsers: [{ userId: 'admin-id', email: 'admin@example.com', status: 'CONFIRMED', enabled: true, isAdmin: true, moderatedBoardIds: [] }, { userId: 'member-id', email: 'member@example.com', status: 'FORCE_CHANGE_PASSWORD', enabled: true, isAdmin: false, moderatedBoardIds: ['all-company'] }] }
                 : query.includes('query Org') ? { getOrganizationSettings: { organizationName: 'Anyhow Only', defaultVisibility: 'UNLISTED', defaultVotingMode: 'UP_DOWN', membersCanCreateBoards: false } }
                   : query.includes('query Me') ? { getMySettings: { userId: 'admin', defaultIdentity: 'ASK' } }
                     : {}
@@ -32,6 +33,16 @@ describe('AMA board', () => {
     expect(screen.getByText(/give every question/i)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /AMA Board/i })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /log in/i })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /create your board/i })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /explore the interactive demo/i })).toBeInTheDocument()
+  })
+
+  it('opens a self-contained interactive demo from the landing page', () => {
+    render(<App />)
+    fireEvent.click(screen.getByRole('button', { name: /explore the interactive demo/i }))
+    expect(window.location.pathname).toBe('/boards/demo')
+    expect(screen.getByText(/changes reset when you leave/i)).toBeInTheDocument()
+    expect(screen.getByText(/three most important bets/i)).toBeInTheDocument()
   })
 
   it('posts a new pseudonymous question', async () => {
@@ -66,6 +77,16 @@ describe('AMA board', () => {
     expect(screen.getByRole('button', { name: /download qr code/i })).toBeInTheDocument()
   })
 
+  it('shows status filters without fabricated board event metadata', async () => {
+    window.history.replaceState({}, '', '/boards/all-company')
+    render(<App />)
+    expect(await screen.findByRole('button', { name: 'Unanswered' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Archived' })).toBeInTheDocument()
+    expect(screen.queryByText(/hosted by/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/128 participants/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/friday, 2:00 pm/i)).not.toBeInTheDocument()
+  })
+
   it('lets an administrator post a separate official reply and closes the question', async () => {
     window.history.replaceState({}, '', '/boards/all-company')
     sessionStorage.setItem('ama-board-session', JSON.stringify({ accessToken: 'access', idToken, email: 'admin@example.com', groups: ['Admins'] }))
@@ -75,6 +96,10 @@ describe('AMA board', () => {
     fireEvent.click(screen.getByRole('button', { name: /post reply and close/i }))
     expect(await screen.findByText('Leadership has approved the proposal.')).toBeInTheDocument()
     expect(screen.getByText(/this question is closed/i)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Archived' }))
+    expect(screen.getByText('Leadership has approved the proposal.')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Unanswered' }))
+    expect(screen.queryByText('Leadership has approved the proposal.')).not.toBeInTheDocument()
   })
 
   it('offers configurable PDF export to administrators', async () => {
@@ -147,6 +172,18 @@ describe('AMA board', () => {
     fireEvent.click(screen.getByRole('button', { name: /admin panel/i }))
     expect(screen.getByRole('heading', { name: 'Administration' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: /welcome, admin@example.com/i })).toBeInTheDocument()
+  })
+
+  it('lists Cognito users and provides administrator and moderator role management', async () => {
+    window.history.replaceState({}, '', '/admin')
+    sessionStorage.setItem('ama-board-session', JSON.stringify({ accessToken: 'access', idToken, email: 'admin@example.com', groups: ['Admins'] }))
+    render(<App />)
+    fireEvent.click(screen.getByRole('button', { name: 'Users' }))
+    expect(await screen.findByText('member@example.com')).toBeInTheDocument()
+    fireEvent.click(screen.getAllByRole('button', { name: /manage roles/i })[1])
+    expect(screen.getByRole('dialog', { name: /manage roles/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /organisation administrator/i })).toBeInTheDocument()
+    expect(screen.getByText(/board moderator access/i)).toBeInTheDocument()
   })
 
   it('creates a board from the admin panel', async () => {

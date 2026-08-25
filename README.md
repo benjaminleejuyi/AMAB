@@ -34,6 +34,10 @@ Every board's **Share** dialog provides its canonical URL, a one-click copy acti
 
 Board administrators can configure up to ten question categories. Organisation administrators and board owners can permanently delete a board from the Boards administration tab; the in-app confirmation requires the exact board title and deletes its questions, official replies, comments, votes, and memberships without using a browser-native JavaScript confirmation dialog.
 
+Board views contain real **All**, **Unanswered**, and **Archived** status filters and do not display fabricated hosts, schedules, or participant totals. The administration Users tab reads the complete Cognito user pool and provides an in-app role manager for organisation administrator access and board-by-board moderator assignments.
+
+The public landing page deliberately offers login and a single **Explore the interactive demo** action; board creation is kept inside authenticated administration. The `/boards/demo` experience is self-contained, uses sample questions, and resets its temporary posting, voting, and commenting changes when the visitor leaves.
+
 ## Deploy to AWS
 
 The infrastructure is configured to serve Askboard at `ama.anyhowonly.com` through Route 53, an ACM certificate, and CloudFront. The `anyhowonly.com` public hosted zone must already exist in the AWS account; the deployment script discovers it automatically or accepts `HOSTED_ZONE_ID` explicitly.
