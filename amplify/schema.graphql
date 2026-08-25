@@ -1,0 +1,91 @@
+enum BoardVisibility { PUBLIC UNLISTED }
+enum PostingPolicy { ANYONE AUTHENTICATED MODERATORS CLOSED }
+enum VotingMode { NONE LIKES UPVOTE UP_DOWN }
+enum BoardRole { OWNER MODERATOR }
+enum QuestionStatus { OPEN SELECTED ANSWERED ARCHIVED }
+
+type Board @aws_cognito_user_pools @aws_api_key {
+  id: ID!
+  title: String!
+  description: String
+  visibility: BoardVisibility!
+  postingPolicy: PostingPolicy!
+  votingMode: VotingMode!
+  commentsEnabled: Boolean!
+  visibleVoteTotals: Boolean!
+  anonymousPosting: Boolean!
+  categories: [String!]!
+  canModerate: Boolean!
+  presentedQuestionId: ID
+  createdBy: ID!
+  createdAt: AWSDateTime!
+  updatedAt: AWSDateTime!
+}
+
+type Question @aws_cognito_user_pools @aws_api_key {
+  id: ID!
+  boardId: ID!
+  body: String!
+  authorDisplayName: String!
+  category: String!
+  status: QuestionStatus!
+  rank: String!
+  upvotes: Int!
+  downvotes: Int!
+  comments: [Comment!]!
+  officialReply: OfficialReply
+  createdAt: AWSDateTime!
+  updatedAt: AWSDateTime!
+}
+
+type Comment { id: ID!, questionId: ID!, body: String!, authorDisplayName: String!, createdAt: AWSDateTime! }
+type OfficialReply { body: String!, authorDisplayName: String!, createdAt: AWSDateTime! }
+type QuestionConnection { items: [Question!]!, nextToken: String }
+type BoardMember { boardId: ID!, userId: ID!, role: BoardRole! }
+type OrganizationSettings { organizationName: String!, defaultVisibility: BoardVisibility!, defaultVotingMode: VotingMode!, membersCanCreateBoards: Boolean!, updatedAt: AWSDateTime }
+type UserSettings { userId: ID!, defaultIdentity: String!, updatedAt: AWSDateTime }
+type OrganizationUser { userId: ID!, email: AWSEmail!, status: String!, enabled: Boolean!, isAdmin: Boolean!, moderatedBoardIds: [ID!]! }
+
+input CreateQuestionInput { boardId: ID!, body: String!, category: String!, identifyAs: String }
+input CreateBoardInput { title: String!, description: String, visibility: BoardVisibility, postingPolicy: PostingPolicy, votingMode: VotingMode, commentsEnabled: Boolean, categories: [String!] }
+input UpdateBoardInput { id: ID!, title: String, description: String, visibility: BoardVisibility, postingPolicy: PostingPolicy, votingMode: VotingMode, commentsEnabled: Boolean, visibleVoteTotals: Boolean, anonymousPosting: Boolean, categories: [String!] }
+input CastVoteInput { boardId: ID!, questionId: ID!, value: Int! }
+input AddCommentInput { boardId: ID!, questionId: ID!, body: String! }
+input AddOfficialReplyInput { boardId: ID!, questionId: ID!, body: String! }
+input UpdateOrganizationSettingsInput { organizationName: String!, defaultVisibility: BoardVisibility!, defaultVotingMode: VotingMode!, membersCanCreateBoards: Boolean! }
+input UpdateUserSettingsInput { defaultIdentity: String! }
+
+type Mutation {
+  createBoard(input: CreateBoardInput!): Board! @aws_cognito_user_pools
+  updateBoard(input: UpdateBoardInput!): Board! @aws_cognito_user_pools
+  deleteBoard(id: ID!): Board! @aws_cognito_user_pools
+  setUserAdmin(userId: ID!, enabled: Boolean!): OrganizationUser! @aws_cognito_user_pools
+  setUserModerator(boardId: ID!, userId: ID!, enabled: Boolean!): OrganizationUser! @aws_cognito_user_pools
+  inviteOrganizationUser(email: AWSEmail!): OrganizationUser! @aws_cognito_user_pools
+  createQuestion(input: CreateQuestionInput!): Question! @aws_cognito_user_pools @aws_api_key
+  castVote(input: CastVoteInput!): Question! @aws_cognito_user_pools @aws_api_key
+  addComment(input: AddCommentInput!): Comment! @aws_cognito_user_pools @aws_api_key
+  addOfficialReply(input: AddOfficialReplyInput!): Question! @aws_cognito_user_pools
+  selectQuestion(boardId: ID!, questionId: ID): Board! @aws_cognito_user_pools
+  assignModerator(boardId: ID!, userId: ID!): BoardMember! @aws_cognito_user_pools
+  inviteUser(boardId: ID!, email: AWSEmail!): BoardMember! @aws_cognito_user_pools
+  updateOrganizationSettings(input: UpdateOrganizationSettingsInput!): OrganizationSettings! @aws_cognito_user_pools
+  updateMySettings(input: UpdateUserSettingsInput!): UserSettings! @aws_cognito_user_pools
+}
+
+type Query {
+  getBoard(id: ID!): Board @aws_cognito_user_pools @aws_api_key
+  listBoards: [Board!]! @aws_cognito_user_pools
+  getOrganizationSettings: OrganizationSettings! @aws_cognito_user_pools
+  getMySettings: UserSettings! @aws_cognito_user_pools
+  listUsers: [OrganizationUser!]! @aws_cognito_user_pools
+  listQuestions(boardId: ID!, limit: Int): QuestionConnection! @aws_cognito_user_pools @aws_api_key
+}
+
+type Subscription {
+  questionChanged(boardId: ID!): Question @aws_subscribe(mutations: ["createQuestion", "castVote", "addOfficialReply"])
+  commentAdded(boardId: ID!): Comment @aws_subscribe(mutations: ["addComment"])
+  presentationChanged(boardId: ID!): Board @aws_subscribe(mutations: ["selectQuestion"])
+}
+
+schema { query: Query, mutation: Mutation, subscription: Subscription }
