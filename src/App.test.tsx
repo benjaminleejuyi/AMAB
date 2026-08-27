@@ -17,6 +17,7 @@ describe('AMA board', () => {
               : query.includes('mutation OfficialReply') ? { addOfficialReply: { id: 'q1', status: 'ANSWERED', officialReply: { body: JSON.parse(String(options.body)).variables.input.body, authorDisplayName: 'admin@example.com', createdAt: new Date().toISOString() } } }
               : query.includes('query ListBoards') ? { listBoards: [] }
                 : query.includes('query ListUsers') ? { listUsers: [{ userId: 'admin-id', email: 'admin@example.com', status: 'CONFIRMED', enabled: true, isAdmin: true, moderatedBoardIds: [] }, { userId: 'member-id', email: 'member@example.com', status: 'FORCE_CHANGE_PASSWORD', enabled: true, isAdmin: false, moderatedBoardIds: ['all-company'] }] }
+                  : query.includes('mutation InviteOrganizationUser') ? { inviteOrganizationUser: { userId: 'new-id', email: JSON.parse(String(options.body)).variables.email, status: 'FORCE_CHANGE_PASSWORD', enabled: true, isAdmin: false, moderatedBoardIds: [] } }
                 : query.includes('query Org') ? { getOrganizationSettings: { organizationName: 'Anyhow Only', defaultVisibility: 'UNLISTED', defaultVotingMode: 'UP_DOWN', membersCanCreateBoards: false } }
                   : query.includes('query Me') ? { getMySettings: { userId: 'admin', defaultIdentity: 'ASK' } }
                     : {}
@@ -172,6 +173,21 @@ describe('AMA board', () => {
     fireEvent.click(screen.getByRole('button', { name: /admin panel/i }))
     expect(screen.getByRole('heading', { name: 'Administration' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: /welcome, admin@example.com/i })).toBeInTheDocument()
+  })
+
+  it('creates an organisation user from the admin panel', async () => {
+    window.history.replaceState({}, '', '/admin')
+    sessionStorage.setItem('ama-board-session', JSON.stringify({ accessToken: 'access', idToken, email: 'admin@example.com', groups: ['Admins'] }))
+    render(<App />)
+    fireEvent.click(screen.getByRole('button', { name: 'Users' }))
+    fireEvent.click(screen.getByRole('button', { name: /create user/i }))
+    expect(screen.getByRole('dialog', { name: /create organisation user/i })).toBeInTheDocument()
+    const submit = screen.getByRole('button', { name: /create user and send invitation/i })
+    expect(submit).toBeDisabled()
+    fireEvent.change(screen.getByPlaceholderText('new.user@company.com'), { target: { value: 'new.user@company.com' } })
+    fireEvent.click(submit)
+    expect(await screen.findByText('new.user@company.com')).toBeInTheDocument()
+    expect(screen.getByText(/temporary-password invitation/i)).toBeInTheDocument()
   })
 
   it('lists Cognito users and provides administrator and moderator role management', async () => {
